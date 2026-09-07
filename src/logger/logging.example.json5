@@ -1,0 +1,40 @@
+{
+  logging: {
+    logTextFormat: '[{$timestamp}] {$level} {$caller} {$loggerKey} {$message}',
+    // errorFile: './src/logger/errors.json5',
+    sinks: {
+      console: { enabled: true, format: 'text', levels: [] },
+      // Disable console if stdout/stderr below should be the sole terminal sink.
+      stdout: { enabled: false, format: 'json', levels: ['info', 'debug'] },
+      stderr: { enabled: false, format: 'json', levels: ['warn', 'error'] },
+      file: {
+        enabled: false, format: 'json', path: './logs/app.jsonl', levels: ['warn', 'error'],
+      },
+      http: {
+        enabled: false, format: 'json', url: 'http://localhost:8080/logs',
+        method: 'POST', timeoutMs: 2500, levels: ['error'],
+        optionalHeaders: {
+          'x-service-name': 'example',
+          // Authorization: '${LOG_AUTHORIZATION}',
+        },
+      },
+      syslog: {
+        enabled: false, format: 'json', protocol: 'udp', host: 'localhost',
+        // Omit port for 514 (UDP/TCP) or 6514 (TLS).
+        facility: 'local0', appName: 'example', hostname: 'example-01',
+        msgId: 'app-log', defaultSeverity: 'info', timeoutMs: 2500,
+        framing: 'octet-counted', socketType: 'udp4', levels: ['warn', 'error'],
+        // servername: 'logs.example.com',
+        // tlsOptions: { caFile: '${LOG_CA_FILE}' },
+      },
+    },
+    gates: {
+      failedLoginAttemptsExample: { level: 'warn', console: true, file: true, http: false, syslog: true },
+      successfulLogin: { enabled: false },
+    },
+    kubernetes: {
+      enabled: false,
+      podName: '${K8S_POD_NAME}', namespace: '${K8S_NAMESPACE}', nodeName: '${K8S_NODE_NAME}',
+    },
+  },
+}

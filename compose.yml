@@ -1,0 +1,33 @@
+services:
+  carstate:
+    build:
+      context: .
+      target: development
+    init: true
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CARSTATE_CONFIG_PATH: ${CARSTATE_CONFIG_PATH:-/app/config/carstate.dev.json5}
+      CARSTATE_SECRETS_PATH: ${CARSTATE_SECRETS_PATH:-/app/config/secrets.example.json5}
+    volumes:
+      - .:/app
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - cargo-target:/app/target
+    ports:
+      - "127.0.0.1:${CARSTATE_DEV_HTTP_PORT:-3000}:3000"
+    depends_on:
+      mqtt:
+        condition: service_started
+    stop_grace_period: 20s
+  mqtt:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "127.0.0.1:${CARSTATE_DEV_MQTT_PORT:-1883}:1883"
+volumes:
+  cargo-registry:
+  cargo-git:
+  cargo-target:

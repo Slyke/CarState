@@ -1,0 +1,11 @@
+.git
+.agents
+.codex
+.env
+.env.*
+config/secrets*.json5
+config/*.local.json5
+target
+src/logger/target
+logs
+*.log

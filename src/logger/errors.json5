@@ -1,0 +1,4 @@
+{
+  // Each error-producing call site should have its own key.
+  ERR_UNKNOWN: '0000000000000000',
+}
