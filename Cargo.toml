@@ -10,7 +10,9 @@ axum = "0.8.9"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 json5 = "1.3.1"
 rand = "0.8"
-rumqttc = "0.25.1"
+# Use the same Ring provider as the logger; rumqttc's defaults also enable AWS-LC.
+rumqttc = { version = "0.25.1", default-features = false, features = ["use-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 styleguide-logger = { path = "src/logger" }
@@ -20,6 +22,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
+rcgen = "0.14"
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
 

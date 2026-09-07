@@ -260,7 +260,7 @@ fn snapshot_is_complete_allowlisted_and_read_only() {
     let a = serde_json::to_value(e.snapshot(2., &clock, &identity)).unwrap();
     let b = serde_json::to_value(e.snapshot(2., &clock, &identity)).unwrap();
     assert_eq!(a, b);
-    assert_eq!(a["states"].as_object().unwrap().len(), 20);
+    assert_eq!(a["states"].as_object().unwrap().len(), State::ALL.len());
     assert_eq!(a["facts"]["locked"]["value"], serde_json::Value::Null);
     assert!(a["mqtt"].get("password").is_none());
     assert!(a["mqtt"].get("username").is_none());

@@ -9,7 +9,7 @@ use crate::{
 };
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Debug)]
 pub struct Publication {
@@ -64,7 +64,15 @@ pub struct Engine {
     pub stopping: bool,
     pub dry: bool,
     pub events: Vec<(&'static str, Value)>,
+    pub telemetry_timed_out: Tracked<bool>,
+    history: VecDeque<HistoryEntry>,
+    history_sequence: u64,
     last_health: Option<bool>,
+}
+struct HistoryEntry {
+    sequence: u64,
+    at: f64,
+    changes: Vec<Value>,
 }
 impl Engine {
     pub fn new(config: Config, dry: bool) -> Self {
@@ -122,6 +130,12 @@ impl Engine {
             stopping: false,
             dry,
             events: Vec::new(),
+            telemetry_timed_out: Tracked {
+                value: Some(false),
+                last_changed: None,
+            },
+            history: VecDeque::new(),
+            history_sequence: 0,
             last_health: None,
         }
     }
@@ -249,6 +263,23 @@ impl Engine {
         mut clock: impl FnMut() -> f64,
         mut submit: impl FnMut(&Publication) -> Result<(), SubmissionError>,
     ) {
+        let mut changes = Vec::new();
+        let timed_out = self
+            .telemetry_deadline()
+            .is_some_and(|deadline| now >= deadline);
+        let previous = self.telemetry_timed_out.value;
+        if self.telemetry_timed_out.set(Some(timed_out), now) {
+            let context = json!({"kind":"telemetry","previous":previous,"value":timed_out,"reason":if timed_out {"timeout"} else {"valid_telemetry_received"}});
+            changes.push(context.clone());
+            self.events.push((
+                if timed_out {
+                    "TELEMETRY_TIMED_OUT"
+                } else {
+                    "TELEMETRY_RECOVERED"
+                },
+                context,
+            ));
+        }
         let before = self.freshness_status();
         self.vehicle.expire(now);
         for d in self.devices.values_mut() {
@@ -263,26 +294,41 @@ impl Engine {
             }
         }
         let (raw, entries) = rules::evaluate(&self.config, &self.vehicle);
+        let mut admitted_changes = BTreeMap::new();
         for (s, v) in raw {
+            let previous_raw = self.states[&s].value;
             if self.states.get_mut(&s).expect("state").set(v, now) {
-                self.events
-                    .push(("STATE_CHANGED", json!({"state":s,"value":v})));
+                self.events.push((
+                    "STATE_CHANGED",
+                    json!({"state":s,"previous":previous_raw,"value":v}),
+                ));
             }
             let filter = self.controls.get_mut(&s).expect("filter");
             let before = filter.admitted.value;
             let cooldown = filter.cooldown;
             filter.update(v, now, &self.config.jitter);
+            if before != filter.admitted.value {
+                admitted_changes.insert(s, (before, filter.admitted.value));
+            }
+            if previous_raw != v || before != filter.admitted.value {
+                changes.push(json!({"kind":"state","state":s,"raw":{"previous":previous_raw,"value":v},"control":{"previous":before,"value":filter.admitted.value}}));
+            }
             if before != filter.admitted.value || cooldown != filter.cooldown {
                 self.events.push(("CONTROL_STATE_ADMITTED",json!({"state":s,"value":filter.admitted.value,"cooldown_deadline_seconds":filter.cooldown,"burst_count":filter.burst})));
             }
         }
         for (name, values) in entries {
-            let e = self.entries.entry(name).or_default();
+            let e = self.entries.entry(name.clone()).or_default();
             for (s, v) in values {
-                e.entry(s).or_default().set(v, now);
+                let state = e.entry(s).or_default();
+                let previous = state.value;
+                if state.set(v, now) {
+                    changes.push(json!({"kind":"entry_state","entry":name,"state":s,"previous":previous,"value":v}));
+                }
             }
         }
         if self.stopping {
+            self.record_history(now, changes);
             return;
         }
         let eligible = self.transport_ready() && self.devices_ready() && self.workers_healthy;
@@ -310,8 +356,15 @@ impl Engine {
             let available = self.available(i);
             let o = &self.config.outputs[i];
             let runtime = &mut self.outputs[i];
-            for (key, mut context) in runtime.select(o, &self.controls, now, available, self.dry) {
+            let mut events = runtime.restart_on_transitions(&admitted_changes, &self.controls, now);
+            events.extend(runtime.select(o, &self.controls, now, available, self.dry, timed_out));
+            for (key, mut context) in events {
                 context["output"] = json!(o.name);
+                if key == "OUTPUT_RULE_SELECTED" || key.starts_with("OUTPUT_BEHAVIOR_") {
+                    let mut change = context.clone();
+                    change["kind"] = json!(key.to_ascii_lowercase());
+                    changes.push(change);
+                }
                 self.events.push((key, context));
             }
             if !available {
@@ -442,6 +495,36 @@ impl Engine {
                 ));
             }
         }
+        self.record_history(now, changes);
+    }
+    fn record_history(&mut self, now: f64, changes: Vec<Value>) {
+        if changes.is_empty() {
+            return;
+        }
+        self.history_sequence += 1;
+        self.events.push((
+            "STATE_TRANSITION",
+            json!({"sequence":self.history_sequence,"uptime_seconds":now,"changes":changes}),
+        ));
+        let limit = self.config.history_settings.max_entries;
+        if limit == 0 {
+            self.history.clear();
+            return;
+        }
+        while self.history.len() >= limit {
+            self.history.pop_front();
+        }
+        self.history.push_back(HistoryEntry {
+            sequence: self.history_sequence,
+            at: now,
+            changes,
+        });
+    }
+    fn telemetry_deadline(&self) -> Option<f64> {
+        self.config
+            .telemetry_settings
+            .timeout_seconds
+            .map(|timeout| self.vehicle.last_received.unwrap_or(0.) + timeout)
     }
     fn freshness_status(&self) -> BTreeMap<String, Option<&'static str>> {
         let mut result: BTreeMap<_, _> = self
@@ -481,6 +564,7 @@ impl Engine {
         add(self.vehicle.battery.deadline());
         add(self.vehicle.location.deadline());
         add(self.vehicle.split.assembly_deadline);
+        add(self.telemetry_deadline());
         for f in self.devices.values() {
             add(f.deadline());
         }
@@ -519,6 +603,8 @@ impl Engine {
             runtime: json!({"started_at":clock.stamp(Some(0.)),"uptime_seconds":now,"mode":if self.dry {"dry_run"} else {"normal"},"publishing_enabled":!self.dry,"ready":self.healthy(),"control_pipeline_healthy":self.healthy(),"workers":{"evaluator":{"healthy":self.workers_healthy},"timer_scheduler":{"healthy":self.workers_healthy},"publisher":{"healthy":self.workers_healthy},"mqtt":{"healthy":self.workers_healthy},"last_progress_at":clock.stamp(Some(now)),"expected_wait":"bounded MQTT I/O or scheduled deadline"},"http":c.http,"single_writer_enforcement":"operational_assumption"}),
             mqtt: json!({"client_id":identity.client_id,"client_id_generated":identity.generated,"broker":{"host":c.mqtt_settings.ip,"port":c.mqtt_settings.port,"use_tls":c.mqtt_settings.use_tls,"validate_certs":c.mqtt_settings.validate_certs},"connected":self.connected.snapshot(clock),"connection_generation":self.generation,"qos":c.mqtt_settings.qos,"retain_commands":c.mqtt_settings.retain_commands,"credentials_configured":identity.credentials,"subscriptions":self.subscriptions.iter().map(|(t,s)|json!({"topic":t,"roles":roles[t],"qos":c.mqtt_settings.qos,"active":s.snapshot(clock)})).collect::<Vec<_>>(),"last_received_at":clock.stamp(self.last_received),"last_submitted_at":clock.stamp(self.last_submitted),"last_error":self.last_error.map(|(code,t)|json!({"code":code,"at":clock.stamp(Some(t))})),"counters":{"received_messages":self.counters.received,"rejected_messages":self.counters.rejected,"publish_submission_failures":self.counters.publish_failures,"successful_reconnects":self.counters.reconnects}}),
             facts: self.vehicle.snapshot(now, clock),
+            telemetry: json!({"timeout_seconds":c.telemetry_settings.timeout_seconds,"last_valid_received_at":clock.stamp(self.vehicle.last_received),"age_seconds":self.vehicle.last_received.map(|t|now-t),"timeout_at":clock.stamp(self.telemetry_deadline()),"timed_out":self.telemetry_timed_out.snapshot(clock),"all_lights_off_requested":self.telemetry_timed_out.value == Some(true)}),
+            state_history: json!({"max_entries":c.history_settings.max_entries,"order":"oldest_first","entries":self.history.iter().map(|e|json!({"sequence":e.sequence,"timestamp":clock.stamp(Some(e.at)),"uptime_seconds":e.at,"changes":e.changes})).collect::<Vec<_>>()}),
             states: model::states_snapshot(&self.states, clock),
             control_states: Value::Object(
                 self.controls
@@ -571,6 +657,8 @@ pub struct Snapshot {
     pub runtime: Value,
     pub mqtt: Value,
     pub facts: Value,
+    pub telemetry: Value,
+    pub state_history: Value,
     pub states: Value,
     pub control_states: Value,
     pub entry_states: Value,

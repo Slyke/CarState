@@ -61,6 +61,7 @@ pub fn evaluate(c: &Config, v: &Vehicle) -> Evaluation {
                 (LocationInnerAndCharging, and([inside, charging])),
                 (LocationInnerAndPluggedIn, and([inside, plugged])),
                 (LocationInnerNotPluggedIn, and([inside, not(plugged)])),
+                (LocationInnerNotParked, and([inside, not(parked)])),
                 (
                     LocationInnerParkedNotPluggedIn,
                     and([inside, parked, not(plugged)]),

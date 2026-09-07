@@ -37,7 +37,7 @@ async fn main() -> ExitCode {
 async fn run(bootstrap: &Logger) -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        bootstrap.generate_log(LogOptions {level:"info".into(),caller:"carstate::cli".into(),logger_key:Some("CLI_HELP".into()),message:"carstate [--validate-config | --dry-run]\n--validate-config: validate config/secrets/logging and exit; no network, listeners, output, or file mutations.\n--dry-run: observe MQTT and simulate decisions with a fresh diagnostic ID; no PUBLISH or Last Will, cannot maintain a watchdog.\nNormal mode publishes relay commands. Production requires one active writer per output set; stop and confirm termination before replacement. Config changes require restart.".into(),..Default::default()}).await;
+        bootstrap.generate_log(LogOptions {level:"info".into(),caller:"carstate::cli".into(),logger_key:Some("CLI_HELP".into()),message:"carstate [--validate-config | --dry-run]\n--validate-config: validate config/secrets/logging and exit; no network, listeners, output, or file mutations.\n--dry-run: observe MQTT and simulate decisions with a fresh diagnostic ID; no PUBLISH or Last Will, cannot maintain a watchdog.\nCARSTATE_DRY_RUN=true|false: select observation or normal publishing; defaults to false. --dry-run always enables observation; --validate-config ignores this variable.\nNormal mode publishes relay commands. Production requires one active writer per output set; stop and confirm termination before replacement. Config changes require restart.".into(),..Default::default()}).await;
         return Ok(());
     }
     let validate = args.iter().any(|a| a == "--validate-config");
@@ -65,6 +65,16 @@ async fn run(bootstrap: &Logger) -> Result<(), String> {
         bootstrap.generate_log(LogOptions {level:"info".into(),caller:"carstate::validation".into(),logger_key:Some("CONFIG_VALIDATED".into()),message:"Configuration, secrets, logging and error catalog are valid; no network or publishing started".into(),..Default::default()}).await;
         return Ok(());
     }
+    let env_dry = match std::env::var("CARSTATE_DRY_RUN") {
+        Ok(value) => value
+            .parse::<bool>()
+            .map_err(|_| "CARSTATE_DRY_RUN must be true or false")?,
+        Err(std::env::VarError::NotPresent) => false,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("CARSTATE_DRY_RUN must be true or false".into());
+        }
+    };
+    let dry = dry || env_dry;
     let (id, generated) = app_log::generate_id(&loaded.secrets.mqtt_client_id, dry)?;
     let env: BTreeMap<_, _> = std::env::vars().collect();
     let identity = Identity::new(&id, &env);

@@ -23,6 +23,8 @@ pub struct Config {
     pub jitter: JitterSettings,
     pub output_settings: OutputSettings,
     pub runtime_settings: RuntimeSettings,
+    pub telemetry_settings: TelemetrySettings,
+    pub history_settings: HistorySettings,
     pub heartbeat: HeartbeatSettings,
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -88,7 +90,11 @@ pub struct Secrets {
     pub mqtt_username: String,
     pub mqtt_password: String,
     pub mqtt_client_id: String,
+    #[serde(deserialize_with = "optional_string")]
     pub http_state_token: String,
+}
+fn optional_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -130,6 +136,28 @@ impl Default for RuntimeSettings {
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
+pub struct TelemetrySettings {
+    pub timeout_seconds: Option<f64>,
+}
+impl Default for TelemetrySettings {
+    fn default() -> Self {
+        Self {
+            timeout_seconds: Some(600.),
+        }
+    }
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HistorySettings {
+    pub max_entries: usize,
+}
+impl Default for HistorySettings {
+    fn default() -> Self {
+        Self { max_entries: 50 }
+    }
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct HeartbeatSettings {
     pub enabled: bool,
     pub topic: Option<String>,
@@ -144,7 +172,7 @@ impl Default for HeartbeatSettings {
             topic: None,
             payload: None,
             interval_seconds: 120.,
-            timeout_seconds: 360.,
+            timeout_seconds: 600.,
         }
     }
 }
@@ -271,6 +299,8 @@ impl Output {
                         state,
                         when: true,
                         priority: 0,
+                        start_on_match: false,
+                        restart_on: Vec::new(),
                         behavior: Behavior::Steady { value: true },
                     }]
                 })
@@ -292,7 +322,18 @@ pub struct Rule {
     #[serde(default = "yes")]
     pub when: bool,
     pub priority: i64,
+    /// Anchor a timed behavior to its admitted trigger, even while preempted/offline.
+    #[serde(default)]
+    pub start_on_match: bool,
+    #[serde(default)]
+    pub restart_on: Vec<StateTransition>,
     pub behavior: Behavior,
+}
+#[derive(Clone, Deserialize, Serialize)]
+pub struct StateTransition {
+    pub state: State,
+    pub from: bool,
+    pub to: bool,
 }
 fn yes() -> bool {
     true
@@ -307,6 +348,30 @@ pub enum Behavior {
         interval_seconds: f64,
         duration_seconds: f64,
     },
+    SteadyFor {
+        value: bool,
+        duration_seconds: f64,
+    },
+}
+impl Behavior {
+    pub fn duration(&self) -> Option<f64> {
+        match self {
+            Self::Steady { .. } => None,
+            Self::BlinkFor {
+                duration_seconds, ..
+            }
+            | Self::SteadyFor {
+                duration_seconds, ..
+            } => Some(*duration_seconds),
+        }
+    }
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Steady { .. } => "steady",
+            Self::BlinkFor { .. } => "blink_for",
+            Self::SteadyFor { .. } => "steady_for",
+        }
+    }
 }
 
 pub struct Loaded {
@@ -495,9 +560,6 @@ pub fn validate(c: &Config, s: &Secrets) -> ConfigResult<()> {
     if c.http.state_endpoint_enabled && !c.http.use_http {
         return Err("http.state_endpoint_enabled requires http.use_http = true".into());
     }
-    if c.http.state_endpoint_enabled && s.http_state_token.trim().is_empty() {
-        return Err("State endpoint requires http_state_token".into());
-    }
     if c.mqtt_settings.qos > 1
         || c.mqtt_settings.keep_alive_seconds < 1
         || c.mqtt_settings.keep_alive_seconds > 65535
@@ -512,6 +574,9 @@ pub fn validate(c: &Config, s: &Secrets) -> ConfigResult<()> {
     }
     if c.jitter.max_changes == 0 {
         return Err("jitter.max_changes must be positive".into());
+    }
+    if let Some(timeout) = c.telemetry_settings.timeout_seconds {
+        seconds(timeout, 1., "telemetry_settings.timeout_seconds")?;
     }
     for (v, min, name) in [
         (c.jitter.cooldown_seconds, 1., "jitter.cooldown_seconds"),
@@ -675,6 +740,25 @@ pub fn validate(c: &Config, s: &Secrets) -> ConfigResult<()> {
             if !priorities.insert(r.priority) {
                 return Err("Rule priorities must be distinct within each output".into());
             }
+            if (r.start_on_match || !r.restart_on.is_empty()) && r.behavior.duration().is_none() {
+                return Err("start_on_match and restart_on require a timed behavior".into());
+            }
+            let mut transitions = BTreeSet::new();
+            for t in &r.restart_on {
+                if t.from == t.to || !transitions.insert((t.state, t.from, t.to)) {
+                    return Err("restart_on requires distinct true/false transitions".into());
+                }
+            }
+            if let Behavior::SteadyFor {
+                duration_seconds, ..
+            } = r.behavior
+            {
+                seconds(
+                    duration_seconds,
+                    c.output_settings.min_hold_seconds,
+                    "duration_seconds",
+                )?;
+            }
             if let Behavior::BlinkFor {
                 interval_seconds,
                 duration_seconds,
@@ -757,7 +841,7 @@ pub fn subscriptions(c: &Config) -> BTreeMap<String, Vec<String>> {
 }
 fn unknown_keys(value: &Value, path: &str) -> Vec<String> {
     let allowed = match path {
-        "" => "http mqtt_settings inputs state_settings outputs output_devices jitter output_settings runtime_settings heartbeat logging",
+        "" => "http mqtt_settings inputs state_settings outputs output_devices jitter output_settings runtime_settings telemetry_settings history_settings heartbeat logging",
         "secrets" => "mqtt_username mqtt_password mqtt_client_id http_state_token",
         "http" => "use_http interface port state_endpoint_enabled",
         "mqtt_settings" => "ip port use_tls validate_certs keep_alive_seconds qos retain_commands publish_retry_initial_seconds publish_retry_max_seconds publish_timeout_seconds",
@@ -767,9 +851,16 @@ fn unknown_keys(value: &Value, path: &str) -> Vec<String> {
         "jitter" => "max_changes cooldown_seconds",
         "output_settings" => "min_hold_seconds",
         "runtime_settings" => "worker_stall_seconds",
+        "telemetry_settings" => "timeout_seconds",
+        "history_settings" => "max_entries",
         "heartbeat" => "enabled topic payload interval_seconds timeout_seconds",
-        p if p.ends_with(".behavior") => if value["macro"] == "steady" { "macro value" } else { "macro interval_seconds duration_seconds" },
-        p if p.starts_with("outputs[") && p.contains(".rules[") => "name state when priority behavior",
+        p if p.ends_with(".behavior") => match value["macro"].as_str() {
+            Some("steady") => "macro value",
+            Some("steady_for") => "macro value duration_seconds",
+            _ => "macro interval_seconds duration_seconds",
+        },
+        p if p.starts_with("outputs[") && p.contains(".restart_on[") => "state from to",
+        p if p.starts_with("outputs[") && p.contains(".rules[") => "name state when priority behavior start_on_match restart_on",
         p if p.starts_with("outputs[") => "name color topic device true_payload false_payload default_value state rules",
         p if p.starts_with("state_settings[") => "name target_latitude target_longitude inner_radius_meters outer_radius_meters battery_low_percent battery_low_is_fault",
         p if p.starts_with("output_devices[") && !p.ends_with(".availability") => "name availability",

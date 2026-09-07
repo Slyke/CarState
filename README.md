@@ -2,14 +2,15 @@
 
 Carstate is a Rust service for one vehicle and one MQTT broker. It turns configurable vehicle telemetry into boolean application states and explicit Tasmota relay commands. It does not call a vehicle API. An upstream publisher supplies the facts.
 
-The implementation follows [IMPLEMENTATION_SPEC.md](./IMPLEMENTATION_SPEC.md) and the sibling styleguide's configuration, deployment and logging contracts. There is no JavaScript runtime, UI, database, or persistent state.
+The service keeps its state in memory and provides HTTP diagnostics alongside MQTT control. There is no JavaScript runtime, UI, database, or persistent state.
 
 ## Quick start
 
 Install Rust 1.98.1 and run commands from this repository's root:
 
 ```sh
-cp ./config/secrets.example.json5 ./config/secrets.json5
+cp -n ./config/carstate.example.json5 ./config/carstate.json5
+cp -n ./config/secrets.example.json5 ./config/secrets.json5
 chmod 600 ./config/secrets.json5
 # Edit ./config/carstate.json5 and ./config/secrets.json5 for your broker and topics.
 cargo run --locked -- --validate-config
@@ -26,7 +27,7 @@ The two flags are mutually exclusive. `--help` documents their side effects. Con
 
 ## Docker development
 
-Requires Docker Compose 2.24 or later. The default Compose project starts an isolated, anonymous development Mosquitto broker and a Rust development container. Published ports bind to localhost. The application defaults to dry-run and uses [carstate.dev.json5](./config/carstate.dev.json5), whose broker host is `mqtt`.
+Requires Docker Compose 2.24 or later. `docker compose up` runs `cargo run --locked` using your local `config/carstate.json5`, prepared from [carstate.example.json5](./config/carstate.example.json5). Set its broker address to a host reachable from the container. `CARSTATE_DRY_RUN` selects the mode: `false` publishes actual light commands, and `true` observes without publishing. It defaults to `false`. `CARSTATE_CONFIG_PATH` overrides the config path. Compose also starts a Mosquitto broker for local simulations; published ports bind to localhost.
 
 ```sh
 docker compose up --build
@@ -38,19 +39,27 @@ docker compose restart carstate
 docker compose down
 ```
 
-Source is bind-mounted, and named volumes cache Cargo registry, Git dependencies and build output. Restart the application after editing Rust files; its `cargo run` command rebuilds as needed. To test normal publishing, use `docker compose run --rm --service-ports carstate cargo run --locked` only after stopping the existing application container. Keep this configuration on its isolated development broker.
+Source is bind-mounted, and named volumes cache Cargo registry, Git dependencies and build output. Restart the application after editing Rust files; its `cargo run` command rebuilds as needed. After changing the Compose startup command or config path, recreate it with `docker compose up --build --force-recreate carstate`.
 
-The sample light has availability tracking. Readiness remains false until its `Online` message arrives. Seed example inputs on the development broker:
+Set the mode in the root `.env` (see [.env.example](./.env.example)):
+
+```dotenv
+CARSTATE_DRY_RUN=false
+```
+
+Recreate the container after changing `.env`; `docker compose restart` does not reload its environment. For a one-off dry-run, use `CARSTATE_DRY_RUN=true docker compose up --force-recreate carstate`. The explicit `--dry-run` CLI option also remains available and enables dry-run even when the environment says `false`. `--validate-config` always validates and exits, regardless of this environment setting.
+
+For local simulation, copy `config/carstate.example.json5` to your local `config/carstate.dev.json5`, select it with `CARSTATE_CONFIG_PATH=/app/config/carstate.dev.json5`, and configure its broker as `mqtt:1883` with `use_tls: false`. The sample light has availability tracking, so readiness remains false until its `Online` message arrives. Seed its example inputs on the development broker, using the example's placeholder home at 0,0:
 
 ```sh
 docker compose exec mqtt mosquitto_pub -t tele/garage-light/LWT -m Online -r
-docker compose exec mqtt mosquitto_pub -t vehicle/location -m '{"latitude":49.2827,"longitude":-123.1207}'
+docker compose exec mqtt mosquitto_pub -t vehicle/location -m '{"latitude":0,"longitude":0}'
 docker compose exec mqtt mosquitto_pub -t vehicle/parked -m true
 docker compose exec mqtt mosquitto_pub -t vehicle/battery_level -m 80
 docker compose exec mqtt mosquitto_pub -t vehicle/fault -m healthy
 docker compose exec mqtt mosquitto_pub -t vehicle/tpms_soft_warning_fl -m false
 docker compose exec mqtt mosquitto_pub -t vehicle/charging_state -m Complete
-# Completion keeps green on and the plug-in reminder off. Disconnection starts orange:
+# Completion keeps green on. Disconnection starts five minutes of flashing green:
 docker compose exec mqtt mosquitto_pub -t vehicle/charging_state -m Disconnected
 ```
 
@@ -60,12 +69,16 @@ Both Compose files inject a root `.env` when present and work without one. Compo
 
 ## Configuration
 
-[carstate.json5](./config/carstate.json5) is a full four-color example. Adjust the geofences and upstream value semantics before normal operation. Every input is optional, but at least one vehicle input and one output are required. Exact topics only: MQTT wildcards, NULs, duplicate output topics, and publish/input topic collisions are rejected.
+MQTT and logging TLS use Rustls with the Ring crypto provider. Keep rumqttc's `use-rustls-no-provider` feature and the explicit Ring dependency aligned so Rustls has one provider to select at startup.
+
+[carstate.example.json5](./config/carstate.example.json5) is the portable four-color example, with placeholder coordinates and generic topics. Adjust the geofences and upstream value semantics in your local copy before normal operation. Every input is optional, but at least one vehicle input and one output are required. Exact topics only: MQTT wildcards, NULs, duplicate output topics, and publish/input topic collisions are rejected.
+
+For a TeslaMate integration, map inputs to your vehicle's topics, such as `teslamate/cars/1/location`, `charging_state`, and `plugged_in`, with matching payload values. Map outputs and availability to your Tasmota device's actual topic layout, for example `tasmota/cmnd/example-light/POWER1` through `POWER4` and `tasmota/tele/example-light/LWT`. If your upstream has no explicit parked/gear signal, omit `parked`; parked-dependent reminders will remain inactive until that input is available.
 
 | Setting | Default / behavior |
 | --- | --- |
 | `http.use_http`, `interface`, `port` | `true`, `0.0.0.0`, `3000` |
-| `http.state_endpoint_enabled` | `false`; enabling requires HTTP and a nonblank bearer token |
+| `http.state_endpoint_enabled` | `false`; enabling requires HTTP; bearer authentication is optional |
 | `mqtt_settings.qos`, `retain_commands` | `1`, `false`; only QoS 0/1 supported |
 | `mqtt_settings.use_tls`, `validate_certs` | `false`, `true`; TLS uses system trust roots |
 | `mqtt_settings.keep_alive_seconds` | `30` |
@@ -74,45 +87,65 @@ Both Compose files inject a root `.env` when present and work without one. Compo
 | `publish_retry_initial_seconds`, `publish_retry_max_seconds` | `1`, `30`, under `mqtt_settings` |
 | `mqtt_settings.publish_timeout_seconds` | `5`; submissions use nonblocking acceptance and stalled dispatch/session waits are bounded |
 | `runtime_settings.worker_stall_seconds` | `30`; idle-capable progress checks run at least once per second |
+| `telemetry_settings.timeout_seconds` | `600`; request all lights OFF after this much silence across valid vehicle inputs; `null` disables |
+| `history_settings.max_entries` | `50`; retain the newest logical transition batches in memory; `0` disables retention |
 | `stale_after_seconds` on an input | Null/omitted disables expiry |
 | Split GPS `max_coordinate_skew_seconds` | `10`; each fix requires both axes to be republished |
 | `state_settings`, `output_devices` | Empty arrays |
-| `heartbeat.enabled`, `interval_seconds`, `timeout_seconds` | `false`, `120`, `360` |
+| `heartbeat.enabled`, `interval_seconds`, `timeout_seconds` | `false`, `120`, `600` |
 
 Configuration and secrets use JSON5. A whole string `${ENV_VAR}` resolves recursively to the environment value, preserving it exactly as a string. Unset variables become null; defined empty variables stay empty strings. Partial references and object keys are unchanged. Numeric and boolean settings require those JSON5 types; they are not inferred from environment strings. HTTP port additionally accepts a numeric string for compatibility.
 
-[secrets.env.example.json5](./config/secrets.env.example.json5) illustrates environment-backed credentials. Supply all four variables when using it; missing variables become null and fail the string schema. Explicit empty username/password strings support anonymous brokers. No application code loads `.env` directly; Compose or the process launcher injects it.
+[secrets.env.example.json5](./config/secrets.env.example.json5) illustrates environment-backed credentials. Supply the three MQTT variables when using it; missing values become null and fail their string schema. `HTTP_STATE_TOKEN` is optional. Explicit empty username/password strings support anonymous brokers. No application code loads `.env` directly; Compose or the process launcher injects it.
 
 Supported direct overrides, applied after reference expansion:
 
 - `CARSTATE_CONFIG_PATH`: defaults to `./config/carstate.json5`.
 - `CARSTATE_SECRETS_PATH`: defaults to `./config/secrets.json5`.
 - `CARSTATE_HTTP_PORT`, `CARSTATE_USE_HTTP`, `CARSTATE_HTTP_INT`: retained compatibility overrides.
+- `CARSTATE_DRY_RUN`: execution mode, `true` or `false` (default); invalid values fail normal startup. `--dry-run` enables it and `--validate-config` ignores it.
 
 A missing/blank `mqtt_client_id` generates eight random uppercase letters/digits from the OS once per process, warns once, and reuses that identity across reconnects. A configured nonblank ID is preserved exactly. IDs are never written back to disk. Client IDs do not provide exclusive controller ownership.
 
 ## States and outputs
 
-The fixed Rust state enum covers geofence membership, charging, connection, completion, parked/locked/online/source health, battery-low and configured vehicle faults, plus the documented location composites. See the [complete state table](./IMPLEMENTATION_SPEC.md#fixed-application-states).
+The fixed Rust [state enum](./src/model.rs) covers geofence membership, charging, connection, completion, parked/locked/online/source health, battery-low and configured vehicle faults, plus the location composites used below.
 
 State values are true, false, or unknown. Unknown does not mean false. Malformed or unrecognized payloads preserve the last valid value. Shared topics update all their configured decoders atomically. `charging`, `plugged_in`, and `charge_complete` remain independent: reaching a charge target does not imply unplugging. `parked` is never inferred from GPS, inactivity or locking. Source/logger health is independent of vehicle faults and control readiness.
 
 Evaluate each complete geofence/battery condition within its own named `state_settings` entry, then OR applicable entries. Inner/outer overlap across homes is allowed. An unchanged combined state during a home-to-home handoff does not restart a reminder or republish a steady output. Battery thresholds are independent of GPS, and each entry's `battery_low_is_fault` flag applies only to that entry's threshold.
 
-Outputs have distinct names/topics and either a state shorthand or a nonempty rule list. Distinct integer priorities choose one winner per output. `when` defaults to true. With no matching rule, use `default_value` if at least one trigger is known; all-unknown rules stay silent. Macros:
+Outputs have distinct names/topics and either a state shorthand or a nonempty rule list. Distinct integer priorities choose one winner per output. `when` defaults to true. With no matching rule, use `default_value` if at least one trigger is known; all-unknown rules stay silent unless the telemetry timeout requests OFF. Macros:
 
 - `steady`: holds its configured boolean value.
 - `blink_for`: starts ON, with `interval_seconds` defining a complete ON/OFF cycle and `duration_seconds` bounding the episode. The interval must be at least twice the relay hold and duration at least one full interval. Expiry makes the rule ineligible until an admitted known non-match rearms it.
+- `steady_for`: holds `value` for `duration_seconds`, then becomes ineligible so the next rule or default takes over. Duration must be at least the relay hold. This can delay an amber warning by holding OFF before a lower-priority ON rule.
 
-The example uses red for vehicle faults; orange for a bounded parked/unplugged reminder followed by steady orange; green for home and connected, including completion; and blue for the outer band. High-priority fault rules hold the other colors off. Wiring and payloads are configurable; `TOGGLE` is rejected.
+Timed rules may set `start_on_match: true` to anchor their deadline to the admitted trigger's transition time, even while unavailable or preempted. Rules sharing that trigger and duration then share a deadline. The default is false, which starts only when the rule wins and delivery is eligible. `restart_on: [{state: "plugged_in", from: true, to: false}]` restarts a timed rule when that known edge is admitted and the rule's own trigger matches. Multiple edges in one evaluation restart it once. Duplicate messages, unknown values and reconnects do not restart timers. Explicit restart events start a fresh full duration, including during an existing episode.
+
+The example config defines the light rules below (orange and amber are the same relay). Copy these rules into your local deployment config when updating an existing installation; config changes take effect after a restart.
+
+| Situation | Lights |
+| --- | --- |
+| Outside every 300 m outer radius | Solid red |
+| In a 50–300 m outer band, including when stationary there | Solid amber |
+| Inside a 50 m inner radius, not parked | Solid green and amber |
+| Inside, parked and unplugged | Green blinks 2 seconds ON / 2 seconds OFF for up to 300 seconds, then solid green and amber |
+| Inside, parked and plugged in but waiting/stopped/complete/no power | Solid green |
+| Actively charging anywhere | Blue, in addition to the location lights (green at home, red away) |
+| Vehicle fault | Red blinks for up to 300 seconds, alongside the other colors; restarts on unplugging or entering an inner radius while faulted |
+
+Fault clearance cancels red blinking. After expiry, red returns to its location rule: solid away, otherwise OFF. A fault can therefore remain present without a visible warning at home after five minutes. The example's 20% battery fault threshold applies everywhere. Entering the nearby band alone does not restart the fault reminder; entering the inner radius does. An explicit parked input is required for the green unplugged reminder and the home/not-parked amber rule. Wiring and payloads are configurable; `TOGGLE` is rejected.
 
 Jitter filtering operates on each combined state, separately from raw diagnostics. Its first known value is immediate. After three transitions, later changes wait ten full seconds from the third transition; only the latest value remains pending. Unknown propagates immediately and never rearms an exhausted episode. Blink phases do not consume this budget.
 
-Every relay command uses one scheduler: initial values, changes, phases, retries, preemption, defaults and resynchronization all observe the hold. Recovery also waits a full hold interval. The first eligible blink attempt anchors its duration, even if that attempt fails. Outages and preemption do not extend it. Delayed phases are skipped; there is no catch-up burst.
+Every relay command uses one scheduler: initial values, changes, phases, retries, preemption, defaults, telemetry timeout and resynchronization all observe the hold. Recovery also waits a full hold interval. By default, the first eligible timed attempt anchors its duration, even if that attempt fails; `start_on_match` uses the admitted trigger time instead. Outages and preemption do not extend it. Delayed phases are skipped; there is no catch-up burst.
 
 Successful submission means the MQTT client accepted the command, not broker acknowledgement or physical relay confirmation. Failed submissions retry without new telemetry and always reevaluate the current decision. Disconnect discards the entire old client/event-loop generation, including unsent relay and heartbeat buffers, before creating a clean session with the same ID. Already transmitted QoS 1 work may be duplicated; commands are idempotent explicit targets.
 
-Freshness is based on **valid receipt time**, including retained messages. It cannot establish the upstream measurement's actual age. Choose suitable reporting cadences; expiry is disabled unless configured. Split GPS needs new valid latitude and longitude after each committed pair. An incomplete assembly has a non-extending skew deadline; one axis cannot keep an old location alive indefinitely. Prefer atomic JSON GPS when both axes cannot be published for every fix.
+Freshness is based on **valid receipt time**, including retained messages. It cannot establish the upstream measurement's actual age. Per-input expiry is disabled unless configured. Split GPS needs new valid latitude and longitude after each committed pair. An incomplete assembly has a non-extending skew deadline; one axis cannot keep an old location alive indefinitely. Prefer atomic JSON GPS when both axes cannot be published for every fix.
+
+The global telemetry timeout defaults to **600 seconds**, measured from the latest accepted vehicle payload, or service startup if none has arrived. Valid duplicates and valid split-coordinate components refresh it; device availability, unknown topics and entirely rejected payloads do not. On expiry, every configured output requests OFF through the ordinary hold/retry scheduler. Fresh vehicle telemetry restores the current rules using the cached facts; reminder deadlines continue and do not restart just because telemetry resumes. This detects total telemetry silence, not an individual stuck input; use per-input expiry for that. It does not make a sleeping car fail readiness. If the broker, controller or light is unavailable, physical OFF cannot be guaranteed; device-local watchdog rules remain necessary for that fallback.
 
 ## HTTP and logging
 
@@ -120,7 +153,15 @@ Freshness is based on **valid receipt time**, including retained messages. It ca
 
 Both probes return service/version/`buildHash`, `ok`, and correlation metadata without exposing broker addresses, client IDs, topics, counts or credentials. Canonical UUID `x-correlation-id` values are echoed; absent/invalid IDs are replaced. The same ID appears in the response header and JSON `correlation_id`.
 
-`GET /state` is unregistered by default (404). When enabled it requires `Authorization: Bearer <http_state_token>`, returns JSON and `Cache-Control: no-store`, and exposes a consistent snapshot even before telemetry or during broker outages. Missing/invalid credentials return generic 401 JSON with `WWW-Authenticate: Bearer`. The snapshot includes timestamped facts, stale/unknown reasons, GPS assembly, raw/control/per-entry states, device status, output episodes/retries, heartbeat, connection/subscriptions, counters and build/runtime metadata. It is read-only and contains no usernames, passwords or bearer tokens.
+`GET /state` is unregistered by default (404). When enabled it returns JSON and `Cache-Control: no-store`, and exposes a consistent snapshot even before telemetry or during broker outages. A nonblank `http_state_token` requires the header `Authorization: Bearer <http_state_token>`; missing/invalid credentials return generic 401 JSON with `WWW-Authenticate: Bearer`.
+
+An omitted, null, empty, or whitespace-only token disables the app's authentication check, including when `${HTTP_STATE_TOKEN}` is unset or blank. In that mode the app ignores any Authorization header, allowing a reverse proxy to enforce access control. This explicitly supports the styleguide's administrator endpoint protection at the proxy.
+
+The snapshot includes timestamped facts, stale/unknown reasons, GPS assembly, raw/control/per-entry states, device status, output episodes/retries, heartbeat, connection/subscriptions, counters and build/runtime metadata. It is read-only and contains no usernames, passwords or bearer tokens.
+
+`telemetry` exposes the timeout setting, last valid vehicle receipt, age, deadline, timed-out state and whether all lights are being requested OFF. Each output also exposes `suppressed_by_telemetry`.
+
+`state_history` contains `max_entries`, `order: "oldest_first"`, and an `entries` array retaining the newest **50** evaluations with meaningful changes by default. Each entry has a process-local `sequence`, UTC RFC 3339 `timestamp`, `uptime_seconds`, and a `changes` array. State changes include both raw and admitted previous/current values, so jitter filtering is visible. Entries also cover per-location state changes, output rule selection, reminder start/restart/cancel/expiry, and telemetry timeout/recovery. A whole evaluation occupies one slot. Individual MQTT payloads, unchanged input refreshes, relay blink phases, retries and HTTP reads do not add entries. History resets on process restart; `history_settings.max_entries: 0` disables retention. The same batches are emitted as `STATE_TRANSITION` info logs regardless of history retention.
 
 All application events and structured errors use the bundled [Rust logger](./src/logger/README.md) and [application error catalog](./config/errors.json5). JSON console logs include startup build metadata with HTTP on or off. A bounded 1024-event worker keeps remote logging I/O out of the MQTT/control loop; overflow and sink failures are reported through a separate minimal custom console logger. Shutdown drains accepted log work for up to five seconds.
 
@@ -166,18 +207,18 @@ A Kubernetes deployment must use one replica and `strategy: { type: Recreate }`,
 
 ### Manual Tasmota watchdog setup
 
-Heartbeat is disabled by default. Enable it only after installing and testing a matching device-side watchdog. The example uses topic `cmnd/garage-light/Event`, payload `carstate_heartbeat=alive`, interval 120 seconds and expected timeout 360 seconds. Pulses use QoS 0 and are never retained. Every due pulse first resynchronizes current known relay commands through the normal hold/retry scheduler. Failed workers, unavailable devices/broker or failed delivery suppress pulses; heartbeat-specific failures retry through a freshly authorized recovery pass.
+Heartbeat is disabled by default. Enable it only after installing and testing a matching device-side watchdog. The example uses topic `cmnd/garage-light/Event`, payload `carstate_heartbeat=alive`, interval 120 seconds and expected timeout 600 seconds (10 minutes). Pulses use QoS 0 and are never retained. Every due pulse first resynchronizes current known relay commands through the normal hold/retry scheduler. Failed workers, unavailable devices/broker or failed delivery suppress pulses; heartbeat-specific failures retry through a freshly authorized recovery pass.
 
 For an **unused** rule/timer slot 1, the example all-off fallback is:
 
 ```text
-Rule1 ON System#Init DO RuleTimer1 360 ENDON ON Event#carstate_heartbeat=alive DO RuleTimer1 360 ENDON ON Rules#Timer=1 DO Backlog Power1 OFF; Power2 OFF; Power3 OFF; Power4 OFF ENDON
+Rule1 ON System#Init DO RuleTimer1 600 ENDON ON Event#carstate_heartbeat=alive DO RuleTimer1 600 ENDON ON Rules#Timer=1 DO Backlog Power1 OFF; Power2 OFF; Power3 OFF; Power4 OFF ENDON
 Rule1 4
 Rule1 1
-RuleTimer1 360
+RuleTimer1 600
 ```
 
-Inspect existing rules/timer slots and merge deliberately; never overwrite an occupied slot. `System#Init` arms fallback before networking, repeated matching events reset the timer, and installation arms it immediately. Set every `360` to your configured timeout. Firmware must support Rules. An arbitrary heartbeat topic needs an appropriate device subscription/bridge; the Event command-topic approach avoids that extra feature. See [Tasmota Rules](https://tasmota.github.io/docs/Rules/) and [rule commands](https://tasmota.github.io/docs/Commands/#rules).
+Inspect existing rules/timer slots and merge deliberately; do not overwrite unrelated rules. If slot 1 contains only this watchdog, entering the four lines again replaces it and resets its countdown to the new timeout. `System#Init` arms fallback before networking, repeated matching events reset the timer, and installation arms it immediately. Set every `600` to your configured timeout. Firmware must support Rules. An arbitrary heartbeat topic needs an appropriate device subscription/bridge; the Event command-topic approach avoids that extra feature. See [Tasmota Rules](https://tasmota.github.io/docs/Rules/) and [rule commands](https://tasmota.github.io/docs/Commands/#rules).
 
 Operator verification on a dedicated test device:
 

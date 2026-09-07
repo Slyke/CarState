@@ -317,12 +317,12 @@ fn watchdog_simulator_covers_stopped_controller_broker_loss_and_device_restart()
     impl Device {
         fn boot(now: f64) -> Self {
             Self {
-                deadline: now + 360.,
+                deadline: now + 600.,
                 relay: true,
             }
         }
         fn pulse(&mut self, now: f64) {
-            self.deadline = now + 360.;
+            self.deadline = now + 600.;
         }
         fn tick(&mut self, now: f64) {
             if now >= self.deadline {
@@ -332,12 +332,12 @@ fn watchdog_simulator_covers_stopped_controller_broker_loss_and_device_restart()
     }
     let mut d = Device::boot(0.);
     d.pulse(120.);
-    d.tick(479.);
+    d.tick(719.);
     assert!(d.relay);
-    d.tick(480.);
+    d.tick(720.);
     assert!(!d.relay);
     let mut restarted = Device::boot(500.);
-    restarted.tick(860.);
+    restarted.tick(1100.);
     assert!(!restarted.relay); // no broker or controller pulse
     let mut e = engine();
     e.config.heartbeat.enabled = true;
@@ -349,7 +349,7 @@ fn watchdog_simulator_covers_stopped_controller_broker_loss_and_device_restart()
         .iter()
         .any(|(t, p)| t.ends_with("POWER3") && p == "ON"));
     restarted.relay = true;
-    restarted.pulse(861.);
+    restarted.pulse(1101.);
     assert!(restarted.relay);
 }
 

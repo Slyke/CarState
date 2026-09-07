@@ -28,7 +28,11 @@ fn validate_only_has_no_network_listeners_or_file_mutations_and_modes_conflict()
     v["logging"] = json!({"sinks":{"file":{"enabled":true,"path":"/does/not/exist/carstate-test/log.jsonl"},"http":{"enabled":true,"url":format!("http://127.0.0.1:{}",listener.local_addr().unwrap().port())}}});
     let (dir, mut cmd) = command(v, "{}");
     let before = std::fs::read(dir.path().join("secrets.json5")).unwrap();
-    let result = cmd.arg("--validate-config").output().unwrap();
+    let result = cmd
+        .env("CARSTATE_DRY_RUN", "true")
+        .arg("--validate-config")
+        .output()
+        .unwrap();
     assert!(
         result.status.success(),
         "{}",
@@ -48,7 +52,7 @@ fn validate_only_has_no_network_listeners_or_file_mutations_and_modes_conflict()
         .success());
 }
 #[test]
-fn malformed_secret_errors_and_missing_token_are_sanitized() {
+fn malformed_secret_errors_are_sanitized() {
     for secrets in [
         "{mqtt_password: 'super-secret', broken:}",
         "{mqtt_password: 17, http_state_token:'super-secret'}",
@@ -58,15 +62,79 @@ fn malformed_secret_errors_and_missing_token_are_sanitized() {
         assert!(!output.status.success());
         assert!(!String::from_utf8_lossy(&output.stderr).contains("super-secret"));
     }
+}
+#[test]
+fn validation_accepts_enabled_state_endpoint_without_a_token() {
     let mut v = source();
     v["http"] = json!({"use_http":true,"state_endpoint_enabled":true});
+    v["logging"] = json!({});
+    for secrets in [
+        "{}",
+        "{http_state_token:''}",
+        "{http_state_token:'${HTTP_STATE_TOKEN}'}",
+    ] {
+        let (_dir, mut cmd) = command(v.clone(), secrets);
+        let output = cmd.arg("--validate-config").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+#[test]
+fn invalid_dry_run_environment_fails_without_disclosing_its_value() {
+    let mut v = source();
+    v["logging"] = json!({});
     let (_dir, mut cmd) = command(v, "{}");
-    assert!(!cmd
-        .arg("--validate-config")
+    let output = cmd
+        .env("CARSTATE_DRY_RUN", "invalid-private-value")
         .output()
-        .unwrap()
-        .status
-        .success());
+        .unwrap();
+    assert!(!output.status.success());
+    let errors = String::from_utf8_lossy(&output.stderr);
+    assert!(errors.contains("CARSTATE_DRY_RUN must be true or false"));
+    assert!(!errors.contains("invalid-private-value"));
+}
+#[test]
+fn dry_run_environment_selects_mode_and_cli_can_enable_it() {
+    for (value, flag, expected) in [
+        (None, false, false),
+        (Some("false"), false, false),
+        (Some("true"), false, true),
+        (Some("false"), true, true),
+    ] {
+        let mut v = source();
+        v["mqtt_settings"]["port"] = json!(1);
+        v["logging"] = json!({"sinks":{"console":{"enabled":true,"format":"json","levels":["info","warn","error"]}}});
+        let (_dir, mut cmd) = command(v, "{mqtt_client_id:'configured-test-id'}");
+        if let Some(value) = value {
+            cmd.env("CARSTATE_DRY_RUN", value);
+        }
+        if flag {
+            cmd.arg("--dry-run");
+        }
+        let mut child = cmd.spawn().unwrap();
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        let read = reader.read_line(&mut line);
+        let _ = child.kill();
+        child.wait().unwrap();
+        read.unwrap();
+        let boot: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(boot["loggerKey"], "SERVICE_BOOT_DIAGNOSTICS");
+        assert_eq!(
+            boot["context"]["mode"],
+            if expected { "dry_run" } else { "normal" }
+        );
+        assert_eq!(boot["context"]["publishingEnabled"], !expected);
+        let id = boot["context"]["mqttClientId"].as_str().unwrap();
+        if expected {
+            assert!(id.starts_with("carstate_dryrun_"));
+        } else {
+            assert_eq!(id, "configured-test-id");
+        }
+    }
 }
 #[test]
 fn nonfinite_optional_settings_are_rejected_instead_of_becoming_absent() {

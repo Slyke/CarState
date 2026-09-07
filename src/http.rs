@@ -97,7 +97,9 @@ async fn snapshot(State(s): State<HttpState>, headers: HeaderMap) -> Response {
         .and_then(|h| h.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
-    if !bool::from(supplied.as_bytes().ct_eq(s.state_token.as_bytes())) {
+    if !s.state_token.trim().is_empty()
+        && !bool::from(supplied.as_bytes().ct_eq(s.state_token.as_bytes()))
+    {
         s.log.correlated(
             "warn",
             "HTTP_STATE_AUTH_REJECTED",

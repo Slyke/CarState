@@ -12,6 +12,8 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      CARSTATE_DRY_RUN: ${CARSTATE_DRY_RUN:-false}
     volumes:
       - type: bind
         source: ./config

@@ -3,12 +3,14 @@ services:
     build:
       context: .
       target: development
+    command: ["cargo", "run", "--locked"]
     init: true
     env_file:
       - path: .env
         required: false
     environment:
-      CARSTATE_CONFIG_PATH: ${CARSTATE_CONFIG_PATH:-/app/config/carstate.dev.json5}
+      CARSTATE_DRY_RUN: ${CARSTATE_DRY_RUN:-false}
+      CARSTATE_CONFIG_PATH: ${CARSTATE_CONFIG_PATH:-/app/config/carstate.json5}
       CARSTATE_SECRETS_PATH: ${CARSTATE_SECRETS_PATH:-/app/config/secrets.example.json5}
     volumes:
       - .:/app

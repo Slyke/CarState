@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 pub fn source() -> Value {
     json!({
     "http":{"use_http":false},"mqtt_settings":{"ip":"127.0.0.1"},
+    "telemetry_settings":{"timeout_seconds":null},
     "inputs":{"charging":{"topic":"car/status","true_values":["Charging"],"false_values":["Complete","Disconnected","Stopped"]},"plugged_in":{"topic":"car/status","true_values":["Charging","Complete","Stopped"],"false_values":["Disconnected"]},"charge_complete":{"topic":"car/status","true_values":["Complete"],"false_values":["Charging","Disconnected","Stopped"]},"parked":{"topic":"car/parked","true_values":["true"],"false_values":["false"]},"location":{"mode":"json","topic":"car/gps"},"battery":{"topic":"car/battery"},"locked":{"topic":"car/locked","true_values":["true"],"false_values":["false"]},"online":{"topic":"car/online","true_values":["true"],"false_values":["false"]},"source_healthy":{"topic":"car/health","true_values":["true"],"false_values":["false"]},"faults":[{"name":"tpms","topic":"car/fault","true_values":["true"],"false_values":["false"]}]},
     "state_settings":[{"name":"home","target_latitude":0.,"target_longitude":0.,"inner_radius_meters":50.,"outer_radius_meters":300.,"battery_low_percent":20.,"battery_low_is_fault":true}],
     "outputs":[

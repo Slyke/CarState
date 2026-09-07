@@ -6,3 +6,4 @@
 /config/*.local.json5
 /logs
 /build-info.json
+/IMPLEMENTATION_SPEC.md

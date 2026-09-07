@@ -23,12 +23,13 @@ pub enum State {
     LocationInnerAndCharging,
     LocationInnerAndPluggedIn,
     LocationInnerNotPluggedIn,
+    LocationInnerNotParked,
     LocationInnerParkedNotPluggedIn,
     LocationInnerPluggedInNotCharging,
     LocationInnerChargeComplete,
 }
 impl State {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::LocationWithinOuter,
         Self::LocationOuterBand,
         Self::LocationInner,
@@ -46,6 +47,7 @@ impl State {
         Self::LocationInnerAndCharging,
         Self::LocationInnerAndPluggedIn,
         Self::LocationInnerNotPluggedIn,
+        Self::LocationInnerNotParked,
         Self::LocationInnerParkedNotPluggedIn,
         Self::LocationInnerPluggedInNotCharging,
         Self::LocationInnerChargeComplete,

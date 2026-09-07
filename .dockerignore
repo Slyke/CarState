@@ -5,6 +5,10 @@
 .env.*
 config/secrets*.json5
 config/*.local.json5
+config/carstate.json5
+config/carstate.dev.json5
+config/carstate.prod.json5
+IMPLEMENTATION_SPEC.md
 target
 src/logger/target
 logs

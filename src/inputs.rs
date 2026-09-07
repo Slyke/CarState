@@ -11,6 +11,8 @@ pub struct Vehicle {
     pub location: Fact<Location>,
     pub battery: Fact<f64>,
     pub split: SplitLocation,
+    /// Last accepted vehicle payload, including duplicate values and split coordinates.
+    pub last_received: Option<f64>,
 }
 #[derive(Default)]
 pub struct SplitLocation {
@@ -58,6 +60,7 @@ impl Vehicle {
                 inputs.battery.as_ref().and_then(|b| b.stale_after_seconds),
             ),
             split: SplitLocation::default(),
+            last_received: None,
         }
     }
     pub fn boolean(&self, name: &str) -> Option<bool> {
@@ -67,9 +70,11 @@ impl Vehicle {
     /// Returns whether any configured decoder rejected the payload, without exposing it.
     pub fn receive(&mut self, inputs: &Inputs, topic: &str, payload: &[u8], now: f64) -> bool {
         let mut rejected = false;
+        let mut accepted = false;
         for (name, m) in inputs.booleans() {
             if m.topic == topic {
                 if let Some(v) = decode_bool(m, payload) {
+                    accepted = true;
                     self.booleans
                         .get_mut(name)
                         .expect("configured fact")
@@ -82,6 +87,7 @@ impl Vehicle {
         for f in &inputs.faults {
             if f.mapping.topic == topic {
                 if let Some(v) = decode_bool(&f.mapping, payload) {
+                    accepted = true;
                     self.faults
                         .get_mut(&f.name)
                         .expect("configured fault")
@@ -93,6 +99,7 @@ impl Vehicle {
         }
         if inputs.battery.as_ref().is_some_and(|m| m.topic == topic) {
             if let Some(v) = number(payload, 0., 100.) {
+                accepted = true;
                 self.battery.receive(v, now, now);
             } else {
                 rejected = true;
@@ -102,6 +109,7 @@ impl Vehicle {
             match location {
                 LocationInput::Json { topic: t, .. } if t == topic => {
                     if let Some(v) = decode_location(payload) {
+                        accepted = true;
                         self.location.receive(v, now, now);
                     } else {
                         rejected = true;
@@ -116,6 +124,7 @@ impl Vehicle {
                     let latitude = latitude_topic == topic;
                     let range = if latitude { 90. } else { 180. };
                     if let Some(v) = number(payload, -range, range) {
+                        accepted = true;
                         self.split.generation += 1;
                         let component = Some((v, now, self.split.generation));
                         if latitude {
@@ -133,6 +142,9 @@ impl Vehicle {
                 }
                 _ => (),
             }
+        }
+        if accepted {
+            self.last_received = Some(now);
         }
         rejected
     }

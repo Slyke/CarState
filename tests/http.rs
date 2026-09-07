@@ -109,6 +109,7 @@ async fn state_is_default_off_and_auth_errors_reveal_no_snapshot() {
     assert_eq!(request(state(false), "/state", None, None).await.0, 404);
     for auth in [
         None,
+        Some("Bearer "),
         Some("Bearer wrong"),
         Some("Basic private-admin-token"),
     ] {
@@ -131,7 +132,82 @@ async fn state_is_default_off_and_auth_errors_reveal_no_snapshot() {
     assert_eq!(headers["content-type"], "application/json");
     assert_eq!(headers["cache-control"], "no-store");
     assert_eq!(body["mqtt"]["client_id"], "private-client-id");
-    assert_eq!(body["states"].as_object().unwrap().len(), 20);
+    assert_eq!(
+        body["states"].as_object().unwrap().len(),
+        carstate::model::State::ALL.len()
+    );
     assert!(!body.to_string().contains("private-admin-token"));
     assert_eq!(body["version"], s.build.version);
+    assert_eq!(body["state_history"]["max_entries"], 50);
+    assert_eq!(body["state_history"]["entries"], serde_json::json!([]));
+    assert_eq!(body["telemetry"]["timed_out"]["value"], false);
+}
+
+#[tokio::test]
+async fn state_returns_history_without_adding_entries_on_reads_or_blink_phases() {
+    let s = state(true);
+    let mut e = engine();
+    home(&mut e, 0., "Disconnected");
+    tick(&mut e, 0.);
+    tick(&mut e, 1.);
+    let clock = Clock::default();
+    let identity = SnapshotIdentity {
+        build: s.build.clone(),
+        client_id: "test".into(),
+        generated: false,
+        credentials: false,
+    };
+    let before = e.snapshot(1., &clock, &identity).state_history;
+    for t in 2..60 {
+        tick(&mut e, t as f64);
+    }
+    *s.snapshot.write().unwrap() = e.snapshot(59., &clock, &identity);
+    for _ in 0..2 {
+        let (status, _, body) = request(
+            s.clone(),
+            "/state",
+            Some("Bearer private-admin-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body["state_history"], before);
+        let first = &body["state_history"]["entries"][0];
+        assert_eq!(first["sequence"], 1);
+        assert_eq!(first["uptime_seconds"], 0.);
+        chrono::DateTime::parse_from_rfc3339(first["timestamp"].as_str().unwrap()).unwrap();
+        assert!(first["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["state"] == "parked"));
+    }
+}
+
+#[tokio::test]
+async fn blank_state_token_allows_requests_with_or_without_proxy_authorization() {
+    for token in ["", " \t\n "] {
+        let mut s = state(true);
+        s.state_token = Arc::new(token.into());
+        for auth in [
+            None,
+            Some("Bearer proxy-token"),
+            Some("Basic proxy-credentials"),
+        ] {
+            let (status, headers, body) = request(s.clone(), "/state", auth, None).await;
+            assert_eq!(status, 200);
+            assert_eq!(headers["content-type"], "application/json");
+            assert_eq!(headers["cache-control"], "no-store");
+            assert!(!headers.contains_key("www-authenticate"));
+            assert_eq!(
+                body["correlation_id"].as_str().unwrap(),
+                headers["x-correlation-id"]
+            );
+            assert!(body.get("facts").is_some());
+            assert!(!body.to_string().contains("proxy-token"));
+            assert!(!body.to_string().contains("proxy-credentials"));
+        }
+        s.state_enabled = false;
+        assert_eq!(request(s, "/state", None, None).await.0, 404);
+    }
 }

@@ -1,0 +1,253 @@
+// Portable light-policy example. Copy to your local carstate.json5 or carstate.dev.json5.
+// Set your broker, telemetry topics, device topics and home coordinates before use.
+// Keep credentials in a separate local secrets file.
+{
+  http: {
+    use_http: true,
+    interface: "0.0.0.0",
+    port: 3000,
+    state_endpoint_enabled: true,
+  },
+
+  mqtt_settings: {
+    ip: "127.0.0.1", // Use "mqtt" for the bundled Compose broker.
+    port: 1883,
+    use_tls: false,
+    validate_certs: true,
+    keep_alive_seconds: 30,
+    qos: 1,
+    retain_commands: false,
+    publish_retry_initial_seconds: 1,
+    publish_retry_max_seconds: 30,
+    publish_timeout_seconds: 5,
+  },
+
+  jitter: {
+    max_changes: 3,
+    cooldown_seconds: 10,
+  },
+  output_settings: {
+    min_hold_seconds: 1, // Hard minimum: never less than 1.
+  },
+  runtime_settings: {
+    worker_stall_seconds: 30,
+  },
+  telemetry_settings: {
+    timeout_seconds: 600, // All lights off after 10 minutes without valid vehicle telemetry; null disables.
+  },
+  history_settings: {
+    max_entries: 50, // In-memory /state history; excludes MQTT traffic and blink phases.
+  },
+
+  output_devices: [
+    {
+      name: "garage_light",
+      availability: {
+        topic: "tele/garage-light/LWT",
+        true_values: ["Online"],
+        false_values: ["Offline"],
+      },
+    },
+  ],
+
+  heartbeat: {
+    enabled: false, // Enable only after installing the matching device watchdog.
+    topic: "cmnd/garage-light/Event",
+    payload: "carstate_heartbeat=alive",
+    interval_seconds: 120,
+    timeout_seconds: 600, // Expected device timeout; not remotely installed by Carstate.
+  },
+
+  inputs: {
+    location: {
+      mode: "json",
+      topic: "vehicle/location",
+      stale_after_seconds: null, // Optional per-input expiry; null/omitted disables it.
+    },
+    charging: {
+      topic: "vehicle/charging_state",
+      true_values: ["Charging"],
+      false_values: ["Stopped", "Complete", "NoPower", "Disconnected"],
+    },
+    plugged_in: {
+      topic: "vehicle/charging_state",
+      true_values: ["Charging", "Stopped", "Complete", "NoPower"],
+      false_values: ["Disconnected"],
+    },
+    charge_complete: {
+      topic: "vehicle/charging_state",
+      true_values: ["Complete"],
+      false_values: ["Charging", "Stopped", "NoPower", "Disconnected"],
+    },
+    parked: {
+      topic: "vehicle/parked",
+      true_values: ["true", "parked"],
+      false_values: ["false", "not_parked"],
+    },
+    locked: {
+      topic: "vehicle/locked",
+      true_values: ["true", "locked", "1"],
+      false_values: ["false", "unlocked", "0"],
+    },
+    battery: {
+      topic: "vehicle/battery_level",
+    },
+    online: {
+      topic: "vehicle/online",
+      true_values: ["true", "online", "1"],
+      false_values: ["false", "offline", "0"],
+    },
+    source_healthy: {
+      topic: "vehicle/healthy",
+      true_values: ["true"],
+      false_values: ["false"],
+    },
+    faults: [
+      {
+        name: "reported_vehicle_fault",
+        topic: "vehicle/fault",
+        true_values: ["low tyre pressure", "low battery"],
+        false_values: ["healthy"],
+      },
+      {
+        name: "tpms_soft_warning_fl",
+        topic: "vehicle/tpms_soft_warning_fl",
+        true_values: ["true", "1", "warning"],
+        false_values: ["false", "0", "normal"],
+      },
+    ],
+  },
+
+  state_settings: [
+    {
+      name: "home",
+      target_latitude: 0.0, // Placeholder: replace with your home coordinates.
+      target_longitude: 0.0,
+      outer_radius_meters: 300.0,
+      inner_radius_meters: 50.0,
+      battery_low_percent: 20.0,
+      battery_low_is_fault: true,
+    },
+  ],
+
+  logging: {
+    errorFile: "./config/errors.json5",
+    sinks: {
+      console: { enabled: true, format: "json", levels: ["info", "warn", "error"] },
+    },
+    gates: {
+      SERVICE_BOOT_DIAGNOSTICS: { enabled: true, level: "info", console: true },
+      OUTPUT_BLINK_PHASE: { enabled: false },
+    },
+    // Omit hard-coded Kubernetes/instance metadata so runtime values are used.
+  },
+
+  outputs: [
+    {
+      name: "red",
+      color: "red",
+      device: "garage_light",
+      topic: "cmnd/garage-light/POWER1",
+      true_payload: "ON",
+      false_payload: "OFF",
+      default_value: false,
+      rules: [
+        {
+          name: "fault",
+          state: "vehicle_fault",
+          priority: 100,
+          start_on_match: true,
+          restart_on: [
+            { state: "plugged_in", from: true, to: false },
+            { state: "location_inner", from: false, to: true },
+          ],
+          behavior: { macro: "blink_for", interval_seconds: 4.0, duration_seconds: 300.0 },
+        },
+        {
+          name: "away",
+          state: "location_within_outer",
+          when: false,
+          priority: 10,
+          behavior: { macro: "steady", value: true },
+        },
+      ],
+    },
+    {
+      name: "orange",
+      color: "orange",
+      device: "garage_light",
+      topic: "cmnd/garage-light/POWER2",
+      true_payload: "ON",
+      false_payload: "OFF",
+      default_value: false,
+      rules: [
+        {
+          name: "unplugged_reminder_delay",
+          state: "location_inner_parked_not_plugged_in",
+          priority: 40,
+          start_on_match: true,
+          behavior: { macro: "steady_for", value: false, duration_seconds: 300.0 },
+        },
+        {
+          name: "parked_unplugged",
+          state: "location_inner_parked_not_plugged_in",
+          priority: 30,
+          behavior: { macro: "steady", value: true },
+        },
+        {
+          name: "home_not_parked",
+          state: "location_inner_not_parked",
+          priority: 20,
+          behavior: { macro: "steady", value: true },
+        },
+        {
+          name: "near_home",
+          state: "location_outer_band",
+          priority: 10,
+          behavior: { macro: "steady", value: true },
+        },
+      ],
+    },
+    {
+      name: "green",
+      color: "green",
+      device: "garage_light",
+      topic: "cmnd/garage-light/POWER3",
+      true_payload: "ON",
+      false_payload: "OFF",
+      default_value: false,
+      rules: [
+        {
+          name: "plug_in_reminder",
+          state: "location_inner_parked_not_plugged_in",
+          priority: 20,
+          start_on_match: true,
+          behavior: { macro: "blink_for", interval_seconds: 4.0, duration_seconds: 300.0 },
+        },
+        {
+          name: "at_home",
+          state: "location_inner",
+          priority: 10,
+          behavior: { macro: "steady", value: true },
+        },
+      ],
+    },
+    {
+      name: "blue",
+      color: "blue",
+      device: "garage_light",
+      topic: "cmnd/garage-light/POWER4",
+      true_payload: "ON",
+      false_payload: "OFF",
+      default_value: false,
+      rules: [
+        {
+          name: "actively_charging",
+          state: "charging",
+          priority: 10,
+          behavior: { macro: "steady", value: true },
+        },
+      ],
+    },
+  ],
+}

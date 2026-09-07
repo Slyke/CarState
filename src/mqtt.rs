@@ -2,7 +2,6 @@ use crate::{
     config::{Config, Secrets},
     engine::{Publication, SubmissionError},
 };
-use rumqttc::tokio_rustls::rustls;
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, QoS, Transport};
 use std::{
     sync::{

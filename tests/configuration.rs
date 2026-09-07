@@ -14,6 +14,8 @@ fn defaults_and_minimal_optional_configuration() {
     assert_eq!(c.jitter.max_changes, 3);
     assert_eq!(c.jitter.cooldown_seconds, 10.);
     assert_eq!(c.output_settings.min_hold_seconds, 1.);
+    assert_eq!(c.telemetry_settings.timeout_seconds, Some(600.));
+    assert_eq!(c.history_settings.max_entries, 50);
     assert!(!c.heartbeat.enabled);
     assert!(!c.http.state_endpoint_enabled);
     assert!(c.state_settings.is_empty());
@@ -22,8 +24,8 @@ fn defaults_and_minimal_optional_configuration() {
 #[test]
 fn full_example_and_split_validate() {
     config::parse(
-        include_str!("../config/carstate.json5"),
-        include_str!("../config/secrets.example.json5"),
+        include_str!("../config/carstate.example.json5"),
+        "{}",
         &BTreeMap::new(),
     )
     .unwrap();
@@ -36,6 +38,43 @@ fn full_example_and_split_validate() {
             ..
         })
     ));
+}
+#[test]
+fn state_token_is_optional_and_preserves_configured_values() {
+    let mut v = source();
+    v["http"] = json!({"use_http":true,"state_endpoint_enabled":true});
+    for (secrets, expected) in [
+        ("{}", ""),
+        ("{http_state_token:''}", ""),
+        ("{http_state_token:'   '}", "   "),
+        ("{http_state_token:null}", ""),
+        ("{http_state_token:'${HTTP_STATE_TOKEN}'}", ""),
+        ("{http_state_token:' exact-token '}", " exact-token "),
+    ] {
+        let (_, s, _) = config::parse(&v.to_string(), secrets, &BTreeMap::new()).unwrap();
+        assert_eq!(s.http_state_token, expected);
+        let mut disabled = v.clone();
+        disabled["http"]["use_http"] = json!(false);
+        assert!(config::parse(&disabled.to_string(), secrets, &BTreeMap::new()).is_err());
+    }
+    for token in ["", "   ", " exact-token "] {
+        let env = BTreeMap::from([("HTTP_STATE_TOKEN".into(), token.into())]);
+        let (_, s, _) = config::parse(
+            &v.to_string(),
+            "{http_state_token:'${HTTP_STATE_TOKEN}'}",
+            &env,
+        )
+        .unwrap();
+        assert_eq!(s.http_state_token, token);
+    }
+    for invalid in [json!(true), json!(17), json!([]), json!({})] {
+        assert!(config::parse(
+            &v.to_string(),
+            &json!({"http_state_token":invalid}).to_string(),
+            &BTreeMap::new(),
+        )
+        .is_err());
+    }
 }
 #[test]
 fn validation_matrix_rejects_invalid_cross_fields_and_types() {
@@ -65,6 +104,12 @@ fn validation_matrix_rejects_invalid_cross_fields_and_types() {
         ("/jitter/cooldown_seconds", json!(0.9)),
         ("/output_settings/min_hold_seconds", json!(0.9)),
         ("/runtime_settings/worker_stall_seconds", json!(0)),
+        ("/telemetry_settings/timeout_seconds", json!(0)),
+        ("/telemetry_settings/timeout_seconds", json!("600")),
+        ("/telemetry_settings/timeout_seconds", json!(-1)),
+        ("/history_settings/max_entries", json!(-1)),
+        ("/history_settings/max_entries", json!(1.5)),
+        ("/history_settings/max_entries", json!("50")),
         ("/inputs/charging/topic", json!("a/#")),
         ("/inputs/charging/topic", json!("a/+")),
         ("/inputs/charging/topic", json!("a\u{0}")),
@@ -84,6 +129,27 @@ fn validation_matrix_rejects_invalid_cross_fields_and_types() {
         ("/outputs/1/rules/0/priority", json!(20)),
         ("/outputs/1/rules/0/name", json!("reminder")),
         ("/outputs/1/rules/0/priority", json!(1.5)),
+        ("/outputs/1/rules/0/start_on_match", json!(true)),
+        (
+            "/outputs/1/rules/0/restart_on",
+            json!([{"state":"plugged_in","from":true,"to":false}]),
+        ),
+        (
+            "/outputs/1/rules/1/restart_on",
+            json!([{"state":"plugged_in","from":true,"to":true}]),
+        ),
+        (
+            "/outputs/1/rules/1/restart_on",
+            json!([{"state":"plugged_in","from":true,"to":false},{"state":"plugged_in","from":true,"to":false}]),
+        ),
+        (
+            "/outputs/1/rules/1/restart_on",
+            json!([{"state":"missing","from":true,"to":false}]),
+        ),
+        (
+            "/outputs/1/rules/1/behavior",
+            json!({"macro":"steady_for","value":false,"duration_seconds":0.5}),
+        ),
         ("/outputs/1/rules/0/behavior/macro", json!("script")),
         ("/outputs/1/rules/1/behavior/interval_seconds", json!(1.9)),
         ("/outputs/1/rules/1/behavior/duration_seconds", json!(3)),
