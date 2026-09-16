@@ -73,7 +73,17 @@ MQTT and logging TLS use Rustls with the Ring crypto provider. Keep rumqttc's `u
 
 [carstate.example.json5](./config/carstate.example.json5) is the portable four-color example, with placeholder coordinates and generic topics. Adjust the geofences and upstream value semantics in your local copy before normal operation. Every input is optional, but at least one vehicle input and one output are required. Exact topics only: MQTT wildcards, NULs, duplicate output topics, and publish/input topic collisions are rejected.
 
-For a TeslaMate integration, map inputs to your vehicle's topics, such as `teslamate/cars/1/location`, `charging_state`, and `plugged_in`, with matching payload values. Map outputs and availability to your Tasmota device's actual topic layout, for example `tasmota/cmnd/example-light/POWER1` through `POWER4` and `tasmota/tele/example-light/LWT`. If your upstream has no explicit parked/gear signal, omit `parked`; parked-dependent reminders will remain inactive until that input is available.
+For a TeslaMate integration, map inputs to your vehicle's topics, such as `teslamate/cars/1/location`, `charging_state`, and `plugged_in`, with matching payload values. Map outputs and availability to your Tasmota device's actual topic layout, for example `tasmota/cmnd/example-light/POWER1` through `POWER4` and `tasmota/tele/example-light/LWT`. For direct gear telemetry, map `P` to parked and `D`/`N`/`R` to not parked. TeslaMate can clear its retained `shift_state` when the gear value is absent, so subscribing after parking may not initialize this input. The local deployment instead uses this configurable activity-state proxy:
+
+```json5
+parked: {
+  topic: "teslamate/cars/1/state",
+  true_values: ["online", "charging", "updating", "suspended", "asleep"],
+  false_values: ["driving"],
+},
+```
+
+This indicates TeslaMate's reported activity, not a direct gear reading, and can lag the actual shift into park or drive. Unmapped `offline`, `unavailable`, and `start` payloads preserve the last known parked value; on startup park remains unknown until a recognized value arrives. Offline must not imply parked because connectivity can drop during a drive. See [TeslaMate MQTT topics](https://docs.teslamate.org/docs/integrations/mqtt/) and its [activity-state mapping](https://github.com/teslamate-org/teslamate/blob/main/lib/teslamate/vehicles/vehicle/summary.ex). If no usable parked/gear/activity signal is available, omit `parked`; parked-dependent reminders stay inactive.
 
 | Setting | Default / behavior |
 | --- | --- |
@@ -92,6 +102,7 @@ For a TeslaMate integration, map inputs to your vehicle's topics, such as `tesla
 | `stale_after_seconds` on an input | Null/omitted disables expiry |
 | Split GPS `max_coordinate_skew_seconds` | `10`; each fix requires both axes to be republished |
 | `state_settings`, `output_devices` | Empty arrays |
+| `state_settings[].hysteresis_meters` | `0`; extra exit distance at both radii, smaller than the inner/outer gap |
 | `heartbeat.enabled`, `interval_seconds`, `timeout_seconds` | `false`, `120`, `600` |
 
 Configuration and secrets use JSON5. A whole string `${ENV_VAR}` resolves recursively to the environment value, preserving it exactly as a string. Unset variables become null; defined empty variables stay empty strings. Partial references and object keys are unchanged. Numeric and boolean settings require those JSON5 types; they are not inferred from environment strings. HTTP port additionally accepts a numeric string for compatibility.
@@ -111,9 +122,9 @@ A missing/blank `mqtt_client_id` generates eight random uppercase letters/digits
 
 The fixed Rust [state enum](./src/model.rs) covers geofence membership, charging, connection, completion, parked/locked/online/source health, battery-low and configured vehicle faults, plus the location composites used below.
 
-State values are true, false, or unknown. Unknown does not mean false. Malformed or unrecognized payloads preserve the last valid value. Shared topics update all their configured decoders atomically. `charging`, `plugged_in`, and `charge_complete` remain independent: reaching a charge target does not imply unplugging. `parked` is never inferred from GPS, inactivity or locking. Source/logger health is independent of vehicle faults and control readiness.
+State values are true, false, or unknown. Unknown does not mean false. Malformed or unrecognized payloads preserve the last valid value. Shared topics update all their configured decoders atomically. `charging`, `plugged_in`, and `charge_complete` remain independent: reaching a charge target does not imply unplugging. `parked` is never inferred by the engine from GPS, inactivity or locking; its configured payload mapping may explicitly use an upstream activity-state proxy as above. Source/logger health is independent of vehicle faults and control readiness.
 
-Evaluate each complete geofence/battery condition within its own named `state_settings` entry, then OR applicable entries. Inner/outer overlap across homes is allowed. An unchanged combined state during a home-to-home handoff does not restart a reminder or republish a steady output. Battery thresholds are independent of GPS, and each entry's `battery_low_is_fault` flag applies only to that entry's threshold.
+Evaluate each complete geofence/battery condition within its own named `state_settings` entry, then OR applicable entries. Inner/outer overlap across homes is allowed. Each geofence may set `hysteresis_meters` (default `0`) to retain membership until the vehicle crosses the radius plus that buffer. Entry uses the original radius. The example/local configs use `20`: enter home below 50 m and leave at 70 m; enter nearby at or below 300 m and leave beyond 320 m. This prevents small GPS bounces from switching colors at either boundary. Each home tracks its own membership; unknown location clears that memory. An unchanged combined state during a home-to-home handoff does not restart a reminder or republish a steady output. Battery thresholds are independent of GPS, and each entry's `battery_low_is_fault` flag applies only to that entry's threshold.
 
 Outputs have distinct names/topics and either a state shorthand or a nonempty rule list. Distinct integer priorities choose one winner per output. `when` defaults to true. With no matching rule, use `default_value` if at least one trigger is known; all-unknown rules stay silent unless the telemetry timeout requests OFF. Macros:
 
@@ -127,15 +138,15 @@ The example config defines the light rules below (orange and amber are the same 
 
 | Situation | Lights |
 | --- | --- |
-| Outside every 300 m outer radius | Solid red |
-| In a 50–300 m outer band, including when stationary there | Solid amber |
-| Inside a 50 m inner radius, not parked | Solid green and amber |
+| Outside every outer geofence (300 m entry, 320 m exit with the example buffer) | Solid red |
+| Within the outer geofence but outside the inner one, including when stationary | Solid amber |
+| Inside the inner radius, not parked | Solid amber; green OFF, even while GPS still reports home |
 | Inside, parked and unplugged | Green blinks 2 seconds ON / 2 seconds OFF for up to 300 seconds, then solid green and amber |
 | Inside, parked and plugged in but waiting/stopped/complete/no power | Solid green |
 | Actively charging anywhere | Blue, in addition to the location lights (green at home, red away) |
 | Vehicle fault | Red blinks for up to 300 seconds, alongside the other colors; restarts on unplugging or entering an inner radius while faulted |
 
-Fault clearance cancels red blinking. After expiry, red returns to its location rule: solid away, otherwise OFF. A fault can therefore remain present without a visible warning at home after five minutes. The example's 20% battery fault threshold applies everywhere. Entering the nearby band alone does not restart the fault reminder; entering the inner radius does. An explicit parked input is required for the green unplugged reminder and the home/not-parked amber rule. Wiring and payloads are configurable; `TOGGLE` is rejected.
+Fault clearance cancels red blinking. After expiry, red returns to its location rule: solid away, otherwise OFF. A fault can therefore remain present without a visible warning at home after five minutes. The example's 20% battery fault threshold applies everywhere. Entering the nearby band alone does not restart the fault reminder; entering the inner radius does. A configured parked input is required for the green unplugged reminder and the home/not-parked amber rule. Arrival starts a full 300-second reminder as soon as home, parked, and unplugged all match, regardless of which input arrives last. Plugging in (including waiting for scheduled charging) or leaving park cancels it. The interval and duration are configured in `plug_in_reminder`; keep `unplugged_reminder_delay.duration_seconds` equal to the reminder duration so amber takes over when blinking ends. Wiring and payloads are configurable; `TOGGLE` is rejected.
 
 Jitter filtering operates on each combined state, separately from raw diagnostics. Its first known value is immediate. After three transitions, later changes wait ten full seconds from the third transition; only the latest value remains pending. Unknown propagates immediately and never rearms an exhausted episode. Blink phases do not consume this budget.
 

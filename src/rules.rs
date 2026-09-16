@@ -1,7 +1,7 @@
 use crate::{
     config::Config,
     inputs::Vehicle,
-    model::{and, not, or, Location, State, Truth},
+    model::{and, not, or, Location, State, States, Truth},
 };
 use std::collections::BTreeMap;
 pub type Evaluation = (
@@ -16,6 +16,16 @@ pub fn distance(a: Location, b: Location) -> f64 {
     6_371_000. * 2. * h.clamp(0., 1.).sqrt().asin()
 }
 pub fn evaluate(c: &Config, v: &Vehicle) -> Evaluation {
+    evaluate_with_history(c, v, &BTreeMap::new())
+}
+/// Apply each geofence's exit buffer to its previous membership, before deriving
+/// composite states. Missing/unknown history uses the original entry thresholds;
+/// an unknown location clears membership when the engine stores these results.
+pub fn evaluate_with_history(
+    c: &Config,
+    v: &Vehicle,
+    previous: &BTreeMap<String, States>,
+) -> Evaluation {
     use State::*;
     let mut combined: BTreeMap<_, _> = State::ALL.into_iter().map(|s| (s, None)).collect();
     for (state, name) in [
@@ -52,10 +62,25 @@ pub fn evaluate(c: &Config, v: &Vehicle) -> Evaluation {
                     },
                 )
             });
-            let inside = d.map(|d| d < inner);
+            let was_inside = |state| {
+                previous
+                    .get(&e.name)
+                    .and_then(|states| states.get(&state))
+                    .and_then(|value| value.value)
+                    == Some(true)
+            };
+            let exit_buffer = |state| {
+                if was_inside(state) {
+                    e.hysteresis_meters
+                } else {
+                    0.
+                }
+            };
+            let inside = d.map(|d| d < inner + exit_buffer(LocationInner));
+            let within = d.map(|d| d <= outer + exit_buffer(LocationWithinOuter));
             for (state, value) in [
-                (LocationWithinOuter, d.map(|d| d <= outer)),
-                (LocationOuterBand, d.map(|d| d >= inner && d <= outer)),
+                (LocationWithinOuter, within),
+                (LocationOuterBand, and([within, not(inside)])),
                 (LocationInner, inside),
                 (LocationInnerNotCharging, and([inside, not(charging)])),
                 (LocationInnerAndCharging, and([inside, charging])),

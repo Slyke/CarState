@@ -268,6 +268,8 @@ pub struct StateSettings {
     pub target_longitude: Option<f64>,
     pub outer_radius_meters: Option<f64>,
     pub inner_radius_meters: Option<f64>,
+    /// Extra distance required to leave either radius after entering it.
+    pub hysteresis_meters: f64,
     pub battery_low_percent: Option<f64>,
     pub battery_low_is_fault: bool,
 }
@@ -684,6 +686,21 @@ pub fn validate(c: &Config, s: &Secrets) -> ConfigResult<()> {
                 )
             }
         }
+        if !e.hysteresis_meters.is_finite()
+            || e.hysteresis_meters < 0.
+            || match (e.inner_radius_meters, e.outer_radius_meters) {
+                (Some(inner), Some(outer)) => {
+                    e.hysteresis_meters >= outer - inner
+                        || !(outer + e.hysteresis_meters).is_finite()
+                }
+                _ => e.hysteresis_meters != 0.,
+            }
+        {
+            return Err(
+                "Geofence hysteresis_meters must be finite, nonnegative, and smaller than the gap between inner and outer radii"
+                    .into(),
+            );
+        }
         if e.battery_low_percent
             .is_some_and(|v| !v.is_finite() || !(0. ..=100.).contains(&v))
         {
@@ -862,7 +879,7 @@ fn unknown_keys(value: &Value, path: &str) -> Vec<String> {
         p if p.starts_with("outputs[") && p.contains(".restart_on[") => "state from to",
         p if p.starts_with("outputs[") && p.contains(".rules[") => "name state when priority behavior start_on_match restart_on",
         p if p.starts_with("outputs[") => "name color topic device true_payload false_payload default_value state rules",
-        p if p.starts_with("state_settings[") => "name target_latitude target_longitude inner_radius_meters outer_radius_meters battery_low_percent battery_low_is_fault",
+        p if p.starts_with("state_settings[") => "name target_latitude target_longitude inner_radius_meters outer_radius_meters hysteresis_meters battery_low_percent battery_low_is_fault",
         p if p.starts_with("output_devices[") && !p.ends_with(".availability") => "name availability",
         p if p.starts_with("inputs.faults[") => "name topic true_values false_values stale_after_seconds",
         p if p.starts_with("inputs.") || p.ends_with(".availability") => "topic true_values false_values stale_after_seconds",

@@ -293,7 +293,8 @@ impl Engine {
                 ));
             }
         }
-        let (raw, entries) = rules::evaluate(&self.config, &self.vehicle);
+        let (raw, entries) =
+            rules::evaluate_with_history(&self.config, &self.vehicle, &self.entries);
         let mut admitted_changes = BTreeMap::new();
         for (s, v) in raw {
             let previous_raw = self.states[&s].value;

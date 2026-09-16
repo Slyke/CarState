@@ -79,7 +79,7 @@ fn example_policy_covers_location_parked_and_all_charge_statuses() {
     for (meters, parked, status, expected) in [
         (400., true, "Disconnected", [true, false, false, false]),
         (100., true, "Disconnected", [false, true, false, false]),
-        (0., false, "Disconnected", [false, true, true, false]),
+        (0., false, "Disconnected", [false, true, false, false]),
         (0., true, "Disconnected", [false, false, true, false]),
         (0., true, "Stopped", [false, false, true, false]),
         (0., true, "Complete", [false, false, true, false]),
@@ -178,7 +178,7 @@ fn green_and_amber_share_five_minute_deadline_without_phase_history() {
         .to_string()
         .contains("output_behavior_expired"));
     assert_eq!(e.outputs[1].episodes[0].deadline, Some(300.));
-    assert_eq!(e.outputs[2].episodes[0].deadline, Some(300.));
+    assert_eq!(e.outputs[2].episodes[1].deadline, Some(300.));
     // An enabled heartbeat may resubmit steady targets; it must not cycle the lights
     // or add logical history just because it resynchronizes the device.
     let publications = tick(&mut e, 500.);
@@ -201,15 +201,15 @@ fn plugging_in_or_leaving_park_cancels_and_rearms_the_green_reminder() {
     assert_eq!(lights(&e), [false, false, true, false]);
     feed(&mut e, 20., "vehicle/charging_state", "Disconnected");
     tick(&mut e, 20.);
-    assert_eq!(e.outputs[2].episodes[0].deadline, Some(320.));
+    assert_eq!(e.outputs[2].episodes[1].deadline, Some(320.));
     feed(&mut e, 30., "vehicle/parked", "false");
     tick(&mut e, 30.);
-    assert_eq!(lights(&e), [false, true, true, false]);
+    assert_eq!(lights(&e), [false, true, false, false]);
     feed(&mut e, 40., "vehicle/parked", "true");
     tick(&mut e, 40.);
     assert_eq!(lights(&e), [false, false, true, false]);
     assert_eq!(e.outputs[1].episodes[0].deadline, Some(340.));
-    assert_eq!(e.outputs[2].episodes[0].deadline, Some(340.));
+    assert_eq!(e.outputs[2].episodes[1].deadline, Some(340.));
 }
 
 #[test]
@@ -288,7 +288,7 @@ fn outages_do_not_extend_reminders_or_desynchronize_green_and_amber() {
     tick(&mut e, 306.);
     assert_eq!(lights(&e), [false, true, true, false]);
     assert_eq!(e.outputs[1].episodes[0].deadline, Some(300.));
-    assert_eq!(e.outputs[2].episodes[0].deadline, Some(300.));
+    assert_eq!(e.outputs[2].episodes[1].deadline, Some(300.));
 }
 
 #[test]
@@ -434,7 +434,7 @@ fn configurable_timeout_suspends_blinking_without_restarting_its_deadline() {
     feed(&mut e, 12., "vehicle/charging_state", "Disconnected");
     tick(&mut e, 12.);
     assert_eq!(lights(&e), [false, false, true, false]);
-    assert_eq!(e.outputs[2].episodes[0].deadline, Some(300.));
+    assert_eq!(e.outputs[2].episodes[1].deadline, Some(300.));
     assert_eq!(e.outputs[1].episodes[0].deadline, Some(300.));
 }
 

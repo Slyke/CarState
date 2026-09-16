@@ -125,6 +125,7 @@
       target_longitude: 0.0,
       outer_radius_meters: 300.0,
       inner_radius_meters: 50.0,
+      hysteresis_meters: 20.0, // Enter at 50/300 m; leave at 70/320 m to absorb GPS bounce.
       battery_low_percent: 20.0,
       battery_low_is_fault: true,
     },
@@ -217,6 +218,13 @@
       false_payload: "OFF",
       default_value: false,
       rules: [
+        {
+          // Moving at home is amber, including while GPS still reports the driveway.
+          name: "home_not_parked",
+          state: "location_inner_not_parked",
+          priority: 30,
+          behavior: { macro: "steady", value: false },
+        },
         {
           name: "plug_in_reminder",
           state: "location_inner_parked_not_plugged_in",

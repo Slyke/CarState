@@ -94,6 +94,11 @@ fn validation_matrix_rejects_invalid_cross_fields_and_types() {
         ("/state_settings/0/name", json!("")),
         ("/state_settings/0/inner_radius_meters", json!(301)),
         ("/state_settings/0/outer_radius_meters", json!(-1)),
+        ("/state_settings/0/hysteresis_meters", json!(-1)),
+        ("/state_settings/0/hysteresis_meters", json!(250)),
+        ("/state_settings/0/hysteresis_meters", json!(251)),
+        ("/state_settings/0/hysteresis_meters", json!("20")),
+        ("/state_settings/0/hysteresis_meters", json!(null)),
         ("/state_settings/0/target_latitude", json!(91)),
         ("/state_settings/0/target_longitude", json!(-181)),
         ("/state_settings/0/battery_low_percent", json!(101)),
@@ -328,4 +333,27 @@ fn malformed_sections_fail_before_compatibility_override_indexing() {
         );
         assert!(result.is_err());
     }
+}
+
+#[test]
+fn geofence_hysteresis_defaults_to_zero_and_validates_with_its_radii() {
+    assert_eq!(config(source()).state_settings[0].hysteresis_meters, 0.);
+    for meters in [0., 20., 249.] {
+        let mut raw = source();
+        raw["state_settings"][0]["hysteresis_meters"] = json!(meters);
+        let (c, _, warnings) = config::parse(&raw.to_string(), "{}", &BTreeMap::new()).unwrap();
+        assert_eq!(c.state_settings[0].hysteresis_meters, meters);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut c = config(source());
+        c.state_settings[0].hysteresis_meters = invalid;
+        assert!(config::validate(&c, &config::Secrets::default()).is_err());
+    }
+    let mut raw = source();
+    raw["state_settings"][0] =
+        json!({"name":"battery","battery_low_percent":20.,"battery_low_is_fault":true});
+    assert_eq!(config(raw.clone()).state_settings[0].hysteresis_meters, 0.);
+    raw["state_settings"][0]["hysteresis_meters"] = json!(20.);
+    assert!(config::parse(&raw.to_string(), "{}", &BTreeMap::new()).is_err());
 }
