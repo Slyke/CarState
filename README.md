@@ -258,7 +258,11 @@ git push origin "$VERSION"
 
 SHA=$(git rev-parse --short=12 HEAD)
 
-docker build -t "$IMAGE_NAME:build" -f ./Dockerfile .
+docker build \
+  --build-arg BUILD_HASH="$SHA" \
+  --build-arg CARSTATE_RELEASE=true \
+  -t "$IMAGE_NAME:build" \
+  -f ./Dockerfile .
 
 for TAG in latest "$VERSION" "$VERSION-$SHA"; do
   docker tag "$IMAGE_NAME:build" "$USERNAME/$IMAGE_NAME:$TAG"
