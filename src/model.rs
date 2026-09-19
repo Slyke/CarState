@@ -232,7 +232,10 @@ impl Default for BuildInfo {
             serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/build-info.json")))
                 .expect("generated build metadata");
         Self {
-            version: env!("CARGO_PKG_VERSION").into(),
+            version: v["version"]
+                .as_str()
+                .expect("generated build version")
+                .into(),
             build_hash: v["buildHash"].as_str().unwrap_or("unknown").into(),
             build_number: v["buildNumber"].as_str().map(str::to_owned),
         }

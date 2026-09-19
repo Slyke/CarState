@@ -17,7 +17,7 @@ fi
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-docker build --target production --build-arg "BUILD_HASH=$SHA" --build-arg CARSTATE_RELEASE=true -t "$IMAGE_NAME:build" .
+docker build --target production --build-arg "BUILD_HASH=$SHA" --build-arg "BUILD_VERSION=$VERSION" --build-arg CARSTATE_RELEASE=true -t "$IMAGE_NAME:build" .
 for TAG in latest "$VERSION" "$VERSION-$SHA"; do
   docker tag "$IMAGE_NAME:build" "$USERNAME/$IMAGE_NAME:$TAG"
   docker tag "$IMAGE_NAME:build" "$DOMAIN/$USERNAME/$IMAGE_NAME:$TAG"

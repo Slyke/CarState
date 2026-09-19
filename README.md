@@ -243,7 +243,7 @@ The expected timeout must be a whole number of seconds, at least twice the inter
 
 ## Publishing images
 
-`Cargo.toml` is the canonical SemVer version. Publish the matching `vVERSION` Git tag from a clean committed tree; the current source must have a real commit before a release. Do not force-move deployed version tags.
+`Cargo.toml` is the canonical package SemVer version. `BUILD_VERSION` sets the version reported by the application and defaults to the package version when omitted or blank. Publish the matching `vVERSION` Git tag from a clean committed tree; the current source must have a real commit before a release. Do not force-move deployed version tags.
 
 ```sh
 USERNAME=YOURUSERNAME
@@ -260,6 +260,7 @@ SHA=$(git rev-parse --short=12 HEAD)
 
 docker build \
   --build-arg BUILD_HASH="$SHA" \
+  --build-arg BUILD_VERSION="$VERSION" \
   --build-arg CARSTATE_RELEASE=true \
   -t "$IMAGE_NAME:build" \
   -f ./Dockerfile .
@@ -272,7 +273,7 @@ for TAG in latest "$VERSION" "$VERSION-$SHA"; do
 done
 ```
 
-Alternatively, run `USERNAME=YOURUSERNAME DOMAIN=registry.example.com ./scripts/publish-images.sh` after tagging and authenticating to both registries. The [publishing script](./scripts/publish-images.sh) verifies a clean tree and that the version tag points to HEAD, runs Rust checks/tests, passes a twelve-character Git hash with release validation to Docker, then tags and pushes the **same image** to both registries as:
+Alternatively, run `USERNAME=YOURUSERNAME DOMAIN=registry.example.com ./scripts/publish-images.sh` after tagging and authenticating to both registries. The [publishing script](./scripts/publish-images.sh) verifies a clean tree and that the version tag points to HEAD, runs Rust checks/tests, passes the version tag and a twelve-character Git hash with release validation to Docker, then tags and pushes the **same image** to both registries as:
 
 - `latest`
 - `v0.1.0`

@@ -8,11 +8,12 @@ CMD ["cargo", "run", "--locked"]
 
 FROM development AS builder
 ARG BUILD_HASH=unknown
+ARG BUILD_VERSION
 ARG BUILD_NUMBER
 ARG CARSTATE_RELEASE=false
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
-ENV BUILD_HASH=${BUILD_HASH} BUILD_NUMBER=${BUILD_NUMBER} CARSTATE_RELEASE=${CARSTATE_RELEASE}
+ENV BUILD_HASH=${BUILD_HASH} BUILD_VERSION=${BUILD_VERSION} BUILD_NUMBER=${BUILD_NUMBER} CARSTATE_RELEASE=${CARSTATE_RELEASE}
 RUN cargo build --locked --release --bin carstate
 
 FROM debian:bookworm-slim AS production

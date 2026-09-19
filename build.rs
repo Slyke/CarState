@@ -2,6 +2,7 @@ use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=BUILD_HASH");
+    println!("cargo:rerun-if-env-changed=BUILD_VERSION");
     println!("cargo:rerun-if-env-changed=BUILD_NUMBER");
     println!("cargo:rerun-if-env-changed=CARSTATE_RELEASE");
     println!("cargo:rerun-if-changed=.git/HEAD");
@@ -27,8 +28,11 @@ fn main() {
             "Release requires a real BUILD_HASH"
         );
     }
-    let mut info =
-        serde_json::json!({"version": env::var("CARGO_PKG_VERSION").unwrap(), "buildHash": hash});
+    let version = env::var("BUILD_VERSION")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| env::var("CARGO_PKG_VERSION").unwrap());
+    let mut info = serde_json::json!({"version": version, "buildHash": hash});
     if let Some(number) = env::var("BUILD_NUMBER").ok().filter(|s| !s.is_empty()) {
         info["buildNumber"] = number.into();
     }
