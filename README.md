@@ -246,15 +246,29 @@ The expected timeout must be a whole number of seconds, at least twice the inter
 `Cargo.toml` is the canonical SemVer version. Publish the matching `vVERSION` Git tag from a clean committed tree; the current source must have a real commit before a release. Do not force-move deployed version tags.
 
 ```sh
-VERSION="v$(sed -n 's/^version = "\([^"]*\)"/\1/p' ./Cargo.toml | head -n 1)"
-git status --short
+USERNAME=YOURUSERNAME
+DOMAIN=registry.example.com
+IMAGE_NAME=car-state
+# VERSION="dev"
+VERSION=v0.1.0
+
 git tag -a "$VERSION" -m "$VERSION"
 git push origin "$VERSION"
-# Authenticate to Docker Hub and your second registry using your normal credential flow.
-USERNAME=YOURUSERNAME DOMAIN=registry.example.com ./scripts/publish-images.sh
+# git push --force origin "$VERSION"
+
+SHA=$(git rev-parse --short=12 HEAD)
+
+docker build -t "$IMAGE_NAME:build" -f ./Dockerfile .
+
+for TAG in latest "$VERSION" "$VERSION-$SHA"; do
+  docker tag "$IMAGE_NAME:build" "$USERNAME/$IMAGE_NAME:$TAG"
+  docker tag "$IMAGE_NAME:build" "$DOMAIN/$USERNAME/$IMAGE_NAME:$TAG"
+  docker push "$USERNAME/$IMAGE_NAME:$TAG"
+  docker push "$DOMAIN/$USERNAME/$IMAGE_NAME:$TAG"
+done
 ```
 
-The [publishing script](./scripts/publish-images.sh) verifies a clean tree and that the version tag points to HEAD, runs Rust checks/tests, passes a twelve-character Git hash with release validation to Docker, then tags and pushes the **same image** to both registries as:
+Alternatively, run `USERNAME=YOURUSERNAME DOMAIN=registry.example.com ./scripts/publish-images.sh` after tagging and authenticating to both registries. The [publishing script](./scripts/publish-images.sh) verifies a clean tree and that the version tag points to HEAD, runs Rust checks/tests, passes a twelve-character Git hash with release validation to Docker, then tags and pushes the **same image** to both registries as:
 
 - `latest`
 - `v0.1.0`
